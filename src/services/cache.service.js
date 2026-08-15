@@ -1,6 +1,6 @@
 const NodeCache = require("node-cache");
 
-// stdTTL in seconds - 10 minutes default; Jamendo catalog data doesn't change fast
+// stdTTL in seconds - 10 minutes default; Saavn catalog data doesn't change fast
 const cache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
 
 const getCache = (key) => cache.get(key);

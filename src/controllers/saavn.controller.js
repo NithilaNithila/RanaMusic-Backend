@@ -26,15 +26,15 @@ const searchArtists = asyncHandler(async (req, res) => {
 const searchGlobal = asyncHandler(async (req, res) => {
   const { q, page, limit } = req.query;
   if (!q) return ApiResponse.error(res, "Query param 'q' is required", 400);
-  const [tracks, albums, artists] = await Promise.all([
+  const [tracks, albums, artists] = await Promise.allSettled([
     saavnService.searchTracks(q, { page, limit }),
     saavnService.searchAlbums(q, { page, limit }),
     saavnService.searchArtists(q, { page, limit }),
   ]);
   return ApiResponse.success(res, {
-    tracks: tracks.results || [],
-    albums: albums.results || [],
-    artists: artists.results || [],
+    tracks: tracks.status === "fulfilled" ? tracks.value.results || [] : [],
+    albums: albums.status === "fulfilled" ? albums.value.results || [] : [],
+    artists: artists.status === "fulfilled" ? artists.value.results || [] : [],
   });
 });
 

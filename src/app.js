@@ -9,6 +9,11 @@ const { notFound, errorHandler } = require("./middleware/error.middleware");
 
 const app = express();
 
+// Trust the first proxy hop so req.ip reflects real clients instead of the
+// load balancer. Required for rate limiting to work correctly behind
+// Render/Koyeb/Vercel-style proxies (otherwise all users share one IP bucket).
+app.set("trust proxy", 1);
+
 app.use(helmet());
 app.use(
   cors({

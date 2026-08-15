@@ -33,6 +33,24 @@ const errorHandler = (err, req, res, next) => {
       .join(", ");
   }
 
+  // Upstream API errors (axios) - surface correct status instead of 500
+  if (err.isAxiosError) {
+    const upstreamStatus = err.response?.status;
+    if (upstreamStatus === 404) {
+      statusCode = 404;
+      message = "Resource not found";
+    } else if (upstreamStatus && upstreamStatus >= 500) {
+      statusCode = 502;
+      message = "Upstream service error";
+    } else if (upstreamStatus) {
+      statusCode = upstreamStatus;
+      message = "Upstream request failed";
+    } else {
+      statusCode = 502;
+      message = "Upstream service unreachable";
+    }
+  }
+
   console.error(err);
 
   return ApiResponse.error(

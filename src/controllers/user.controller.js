@@ -36,6 +36,15 @@ const addHistoryEntry = asyncHandler(async (req, res) => {
     albumImage,
   });
 
+  const KEEP = 100;
+  const overflow = await History.find({ user: req.user._id })
+    .sort({ playedAt: -1 })
+    .skip(KEEP)
+    .select("_id");
+  if (overflow.length) {
+    await History.deleteMany({ _id: { $in: overflow.map((o) => o._id) } });
+  }
+
   return ApiResponse.success(res, entry, "History recorded", 201);
 });
 

@@ -8,5 +8,6 @@ router.use("/playlists", require("./playlist.routes"));
 router.use("/favorites", require("./favorite.routes"));
 router.use("/auth", require("./auth.routes"));
 router.use("/users", require("./user.routes"));
+router.use("/saavn", require("./saavn.routes"));
 
 module.exports = router;

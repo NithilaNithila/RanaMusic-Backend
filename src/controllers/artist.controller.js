@@ -2,10 +2,39 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/apiResponse");
 const saavnService = require("../services/saavn.service");
 
+const POPULAR_ARTISTS = [
+  "arijit singh",
+  "shreya ghoshal",
+  "atif aslam",
+  "a r rahman",
+  "pritam",
+  "sonu nigam",
+  "neha kakkar",
+  "darshan raval",
+  "jubin nautiyal",
+  "diljit dosanjh",
+  "armaan malik",
+  "badshah",
+];
+
 const getArtists = asyncHandler(async (req, res) => {
-  const { limit } = req.query;
-  const data = await saavnService.searchArtists("bollywood singers", { page: 0, limit: limit || 20 });
-  return ApiResponse.success(res, data.results || []);
+  const limit = Math.min(parseInt(req.query.limit) || 8, 12);
+  const found = await Promise.allSettled(
+    POPULAR_ARTISTS.slice(0, limit).map((q) =>
+      saavnService.searchArtists(q, { page: 0, limit: 1 })
+    )
+  );
+  const seen = new Set();
+  const results = [];
+  for (const batch of found) {
+    if (batch.status !== "fulfilled") continue;
+    for (const artist of batch.value.results || []) {
+      if (!artist.id || seen.has(artist.id)) continue;
+      seen.add(artist.id);
+      results.push(artist);
+    }
+  }
+  return ApiResponse.success(res, results.slice(0, limit));
 });
 
 const searchArtists = asyncHandler(async (req, res) => {
