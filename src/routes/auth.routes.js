@@ -3,7 +3,7 @@ const router = express.Router();
 const { protect } = require("../middleware/auth.middleware");
 const { authLimiter } = require("../middleware/rateLimiter.middleware");
 const validate = require("../middleware/validate.middleware");
-const { register, login, getMe } = require("../controllers/auth.controller");
+const { register, login, getMe, deleteMe } = require("../controllers/auth.controller");
 
 router.post(
   "/register",
@@ -13,5 +13,6 @@ router.post(
 );
 router.post("/login", authLimiter, validate(["email", "password"]), login);
 router.get("/me", protect, getMe);
+router.delete("/me", protect, deleteMe);
 
 module.exports = router;

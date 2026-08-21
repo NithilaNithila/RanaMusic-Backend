@@ -1,6 +1,9 @@
 const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/apiResponse");
 const User = require("../models/User");
+const Playlist = require("../models/Playlist");
+const Favorite = require("../models/Favorite");
+const History = require("../models/History");
 const generateToken = require("../utils/generateToken");
 
 // POST /api/auth/register
@@ -59,4 +62,18 @@ const getMe = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, req.user);
 });
 
-module.exports = { register, login, getMe };
+// DELETE /api/auth/me
+const deleteMe = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+
+  await Promise.all([
+    Playlist.deleteMany({ user: userId }),
+    Favorite.deleteMany({ user: userId }),
+    History.deleteMany({ user: userId }),
+  ]);
+  await User.findByIdAndDelete(userId);
+
+  return ApiResponse.success(res, null, "Account deleted successfully");
+});
+
+module.exports = { register, login, getMe, deleteMe };
