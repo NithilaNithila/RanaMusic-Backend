@@ -1,6 +1,8 @@
 const axios = require("axios");
 const forge = require("node-forge");
+const { httpAgent, httpsAgent } = require("../config/http");
 const { normalizeTrack, normalizeAlbum, normalizeArtist } = require("./saavn.mappers");
+const { logger } = require("./logger.service");
 const { getCache, setCache, makeCacheKey } = require("./cache.service");
 const { sanitizePagination } = require("../utils/pagination");
 
@@ -8,7 +10,9 @@ const API_BASE = "https://www.jiosaavn.com/api.php";
 const DECRYPT_KEY = "38346591";
 
 const client = axios.create({
-  timeout: 15000,
+  timeout: 8000, // Reduced from 15s to 8s for faster failure
+  httpAgent,
+  httpsAgent,
   headers: {
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
     referer: "https://www.jiosaavn.com/",
@@ -42,7 +46,8 @@ const decryptMediaUrl = (encrypted) => {
     decipher.update(forge.util.createBuffer(forge.util.decode64(encrypted)));
     decipher.finish();
     return decipher.output.getBytes();
-  } catch {
+  } catch (err) {
+    logger.warn({ err: { message: err.message } }, "jiosaavn decryptMediaUrl failed");
     return null;
   }
 };
@@ -114,8 +119,8 @@ const toTrackShape = (raw) => {
     album: { id: raw.albumid || mi.album_id || "", name: raw.album || mi.album || "" },
     image: buildImageLinks(raw.image),
     downloadUrl: buildDownloadLinks(raw.encrypted_media_url || mi.encrypted_media_url),
-    duration: parseInt(raw.duration) || parseInt(mi.duration) || 0,
-    playCount: parseInt(raw.play_count) || 0,
+    duration: parseInt(raw.duration, 10) || parseInt(mi.duration, 10) || 0,
+    playCount: parseInt(raw.play_count, 10) || 0,
     year: raw.year || "",
     language: raw.language || "",
     label: raw.label || mi.label || "",
@@ -134,7 +139,7 @@ const toAlbumShape = (raw) => {
       ? mapArtistMap(artistMap.primary_artists)
       : parseArtistList(raw.primary_artists, raw.primary_artists_id));
   const songCount =
-    parseInt(mi.song_count) ||
+    parseInt(mi.song_count, 10) ||
     (Array.isArray(raw.songs) ? raw.songs.length : 0) ||
     0;
   return {
@@ -146,7 +151,7 @@ const toAlbumShape = (raw) => {
     songCount,
     language: raw.language || "",
     url: raw.perma_url || mi.album_url || "",
-    playCount: parseInt(raw.play_count) || 0,
+    playCount: parseInt(raw.play_count, 10) || 0,
     songs: Array.isArray(raw.songs) ? raw.songs.map(toTrackShape) : [],
   };
 };
@@ -215,7 +220,7 @@ const getArtistById = async (id, { songCount = 10, albumCount = 10 } = {}) => {
 };
 
 const getArtistSongs = async (id, opts = {}) => {
-  const { page } = sanitizePagination(opts);
+  const { page, limit } = sanitizePagination(opts);
   const sortBy = opts.sortBy || "popularity";
   const sortOrder = opts.sortOrder || "desc";
   const data = await jiosaavnGet("artist.getArtistMoreSong", {
@@ -226,7 +231,7 @@ const getArtistSongs = async (id, opts = {}) => {
   });
   const topSongs = data.topSongs || {};
   const list = Array.isArray(topSongs) ? topSongs : topSongs.songs || [];
-  const results = list.map((s) => normalizeTrack(toTrackShape(s)));
+  const results = list.map((s) => normalizeTrack(toTrackShape(s))).slice(0, limit);
   return { total: topSongs.total || results.length, results };
 };
 
@@ -250,7 +255,68 @@ const getLyrics = async (id) => {
   try {
     const data = await jiosaavnGet("lyrics.getLyrics", { lyrics_id: id });
     return data.lyrics || null;
-  } catch {
+  } catch (err) {
+    logger.warn({ err: { message: err.message }, id }, "jiosaavn getLyrics failed");
+    return null;
+  }
+};
+
+// Same fuzzy matching as saavn.service — direct JioSaavn search + lyrics.
+const normalizeName = (s) =>
+  String(s || "")
+    .toLowerCase()
+    .replace(/\s*\(.*?\)\s*/g, " ")
+    .replace(/\s*-\s*(original|official|full video|lyric|ft\.?)\s*.*/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const pickBestMatches = (tracks, artist, title, top = 4) => {
+  const wantT = normalizeName(title);
+  const wantA = normalizeName(artist);
+  if (!wantT) return [];
+
+  const scored = [];
+  for (const t of tracks) {
+    const tT = normalizeName(t.name);
+    const tA = normalizeName(t.artist_name);
+    if (!tT) continue;
+
+    const titleMatch = tT === wantT ? 30 : tT.includes(wantT) || wantT.includes(tT) ? 12 : 0;
+    if (!titleMatch) continue;
+    const artistMatch =
+      !wantA || !tA
+        ? 0
+        : tA === wantA
+          ? 8
+          : tA.includes(wantA) || wantA.includes(tA)
+            ? 3
+            : 0;
+    if (titleMatch + artistMatch <= 0) continue;
+    scored.push({ track: t, score: titleMatch + artistMatch });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, top).map((s) => s.track);
+};
+
+const getLyricsByTitle = async (artist, title) => {
+  try {
+    const data = await jiosaavnGet("search.getResults", { q: `${title} ${artist}`, p: 1, n: 8 });
+    const songs = (data.results || []).map((s) => {
+      const shaped = toTrackShape(s);
+      return {
+        ...normalizeTrack(shaped),
+        lyricsId: s.more_info?.lyrics_id || shaped.lyricsId || "",
+      };
+    });
+
+    for (const hit of pickBestMatches(songs, artist, title)) {
+      const lyrics = await getLyrics(hit.lyricsId || hit.id);
+      if (lyrics) return lyrics;
+    }
+    return null;
+  } catch (err) {
+    logger.warn({ err: { message: err.message }, title, artist }, "jiosaavn getLyricsByTitle failed");
     return null;
   }
 };
@@ -265,4 +331,5 @@ module.exports = {
   getArtistSongs,
   getArtistAlbums,
   getLyrics,
+  getLyricsByTitle,
 };

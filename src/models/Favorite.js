@@ -28,5 +28,6 @@ const favoriteSchema = new mongoose.Schema(
 );
 
 favoriteSchema.index({ user: 1, itemType: 1, jamendoId: 1 }, { unique: true });
+favoriteSchema.index({ user: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Favorite", favoriteSchema);

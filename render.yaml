@@ -1,0 +1,31 @@
+# Render Blueprint for the music backend (Express + MongoDB).
+# Deploys on any push to main. Requires a managed MongoDB (Atlas or Render) URI
+# set as MONGO_URI plus a JWT_SECRET in the service's environment.
+services:
+  - type: web
+    name: music-backend
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CLIENT_URL
+        value: https://your-frontend-domain.com
+      - key: SAAVN_API_BASE
+        value: https://jiosavanwave.vercel.app/api
+      - key: SPOTIFY_API_BASE
+        value: https://spotify-music-api.onrender.com/api
+      - key: YT_API_BASE
+        value: https://youtube-music-api-c2p9.onrender.com
+      - key: AMAZON_API_BASE
+        value: https://amazon-music-api.onrender.com/api

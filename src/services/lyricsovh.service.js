@@ -1,0 +1,33 @@
+const axios = require("axios");
+const { httpAgent, httpsAgent } = require("../config/http");
+const { logger } = require("./logger.service");
+const { getCache, setCache, makeCacheKey } = require("./cache.service");
+
+const client = axios.create({
+  timeout: 8000,
+  httpAgent,
+  httpsAgent,
+  headers: { "User-Agent": "RanaMusic/1.0" },
+});
+
+// Free, keyless lyrics by artist/title (https://lyrics.ovh — Musixmatch data, no auth).
+const getLyrics = async (artist, title) => {
+  if (!artist || !title) return null;
+  const cacheKey = makeCacheKey("lyricsovh", { artist, title });
+  const cached = getCache(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const { data } = await client.get(
+      `https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`
+    );
+    const lyrics = data?.lyrics || null;
+    if (lyrics) setCache(cacheKey, lyrics);
+    return lyrics;
+  } catch (err) {
+    logger.warn({ err: { message: err.message }, title, artist }, "lyricsovh getLyrics failed");
+    return null;
+  }
+};
+
+module.exports = { getLyrics };

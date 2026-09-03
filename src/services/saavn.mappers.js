@@ -10,9 +10,11 @@ const getDownloadUrl = (urls, quality = "320kbps") => {
   return match ? match.url : urls[urls.length - 1]?.url || "";
 };
 
+const nameOf = (a) => (a && typeof a.name === "string" ? a.name.trim() : "");
+
 const getPrimaryArtist = (artists) => {
   if (!artists?.primary?.length) return "";
-  return artists.primary.map((a) => a.name.trim()).join(", ");
+  return artists.primary.map(nameOf).filter(Boolean).join(", ");
 };
 
 const normalizeTrack = (song) => ({
@@ -36,18 +38,28 @@ const normalizeTrack = (song) => ({
     ? {
         primary: (song.artists.primary || []).map((a) => ({
           id: a.id,
-          name: a.name.trim(),
+          name: nameOf(a),
           image: getImage(a.image),
           url: a.url || "",
         })),
         featured: (song.artists.featured || []).map((a) => ({
           id: a.id,
-          name: a.name.trim(),
+          name: nameOf(a),
           image: getImage(a.image),
           url: a.url || "",
         })),
       }
     : { primary: [], featured: [] },
+});
+
+const normalizePlaylist = (playlist) => ({
+  id: playlist.id,
+  name: playlist.name,
+  type: "playlist",
+  image: getImage(playlist.image),
+  language: playlist.language || "",
+  url: playlist.url || "",
+  track_count: playlist.songCount || playlist.totalSongs || 0,
 });
 
 const normalizeAlbum = (album) => ({
@@ -90,4 +102,5 @@ module.exports = {
   normalizeTrack,
   normalizeAlbum,
   normalizeArtist,
+  normalizePlaylist,
 };

@@ -2,24 +2,57 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/apiResponse");
 const User = require("../models/User");
 const History = require("../models/History");
+const { getCache, setCache, delCache, makeCacheKey } = require("../services/cache.service");
+
+const AVATAR_URL_RE = /^https?:\/\/.+/i;
 
 // PUT /api/users/me
 const updateProfile = asyncHandler(async (req, res) => {
   const { username, avatarUrl } = req.body;
   const user = await User.findById(req.user._id);
 
-  if (username !== undefined) user.username = username;
-  if (avatarUrl !== undefined) user.avatarUrl = avatarUrl;
+  if (username !== undefined) {
+    const clean = String(username).trim();
+    if (clean.length < 3 || clean.length > 30) {
+      return ApiResponse.error(res, "Username must be between 3 and 30 characters", 400);
+    }
+    user.username = clean;
+  }
 
-  await user.save();
+  if (avatarUrl !== undefined) {
+    // avatarUrl may be cleared with an empty string; otherwise it must be a URL.
+    if (avatarUrl !== "" && !AVATAR_URL_RE.test(String(avatarUrl))) {
+      return ApiResponse.error(res, "avatarUrl must be a valid http(s) URL", 400);
+    }
+    user.avatarUrl = avatarUrl;
+  }
+
+  try {
+    await user.save();
+  } catch (err) {
+    // Duplicate username surfaces as a clean 409 instead of a generic 500.
+    if (err && err.code === 11000) {
+      return ApiResponse.error(res, "Username already in use", 409);
+    }
+    throw err;
+  }
+  // Invalidate cached auth user so future requests see the new profile
+  delCache(`auth:user:${req.user._id}`);
   return ApiResponse.success(res, user, "Profile updated");
 });
 
-// GET /api/users/me/history
+// GET /api/users/me/history  (cached 30s)
 const getHistory = asyncHandler(async (req, res) => {
+  const key = makeCacheKey(`history:user:${req.user._id}`, {});
+  const cached = getCache(key);
+  if (cached) return ApiResponse.success(res, cached);
+
   const history = await History.find({ user: req.user._id })
     .sort({ playedAt: -1 })
-    .limit(50);
+    .limit(50)
+    .lean();
+
+  setCache(key, history, 30);
   return ApiResponse.success(res, history);
 });
 
@@ -37,15 +70,54 @@ const addHistoryEntry = asyncHandler(async (req, res) => {
   });
 
   const KEEP = 100;
-  const overflow = await History.find({ user: req.user._id })
+  const threshold = await History.find({ user: req.user._id })
     .sort({ playedAt: -1 })
-    .skip(KEEP)
-    .select("_id");
-  if (overflow.length) {
-    await History.deleteMany({ _id: { $in: overflow.map((o) => o._id) } });
+    .skip(KEEP - 1)
+    .limit(1)
+    .select("playedAt")
+    .lean();
+  if (threshold.length) {
+    await History.deleteMany({
+      user: req.user._id,
+      playedAt: { $lt: threshold[0].playedAt },
+    });
   }
 
+  delCache(makeCacheKey(`history:user:${req.user._id}`, {}));
   return ApiResponse.success(res, entry, "History recorded", 201);
 });
 
-module.exports = { updateProfile, getHistory, addHistoryEntry };
+// PUT /api/users/me/password
+const changePassword = asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return ApiResponse.error(res, "currentPassword and newPassword are required", 400);
+  }
+  if (String(newPassword).length < 6 || String(newPassword).length > 72) {
+    return ApiResponse.error(res, "New password must be between 6 and 72 characters", 400);
+  }
+
+  const user = await User.findById(req.user._id).select("+password");
+  if (!user) return ApiResponse.error(res, "User not found", 404);
+
+  const isMatch = await user.comparePassword(currentPassword);
+  if (!isMatch) {
+    return ApiResponse.error(res, "Current password is incorrect", 401);
+  }
+
+  user.password = newPassword;
+  await user.save();
+
+  // Force the next request to re-authenticate; revoke the cached session so a
+  // stolen pre-change token can't keep using cached identity.
+  delCache(`auth:user:${req.user._id}`);
+
+  // Issued JWTs remain valid until expiry. To fully invalidate them the client
+  // should re-issue after a password change (token versioning is a future
+  // enhancement). Logging out on the client is recommended.
+
+  return ApiResponse.success(res, {}, "Password changed successfully");
+});
+
+module.exports = { updateProfile, getHistory, addHistoryEntry, changePassword };

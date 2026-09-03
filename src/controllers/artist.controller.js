@@ -1,40 +1,24 @@
 const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/apiResponse");
+const { logger } = require("../services/logger.service");
 const saavnService = require("../services/saavn.service");
-
-const POPULAR_ARTISTS = [
-  "arijit singh",
-  "shreya ghoshal",
-  "atif aslam",
-  "a r rahman",
-  "pritam",
-  "sonu nigam",
-  "neha kakkar",
-  "darshan raval",
-  "jubin nautiyal",
-  "diljit dosanjh",
-  "armaan malik",
-  "badshah",
-];
+const ytService = require("../services/ytmusic.service");
+const { sanitizeLang } = require("../config/languages");
+const { getArtistPool } = require("../utils/artistPool");
 
 const getArtists = asyncHandler(async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 8, 12);
-  const found = await Promise.allSettled(
-    POPULAR_ARTISTS.slice(0, limit).map((q) =>
-      saavnService.searchArtists(q, { page: 0, limit: 1 })
-    )
-  );
-  const seen = new Set();
-  const results = [];
-  for (const batch of found) {
-    if (batch.status !== "fulfilled") continue;
-    for (const artist of batch.value.results || []) {
-      if (!artist.id || seen.has(artist.id)) continue;
-      seen.add(artist.id);
-      results.push(artist);
-    }
-  }
-  return ApiResponse.success(res, results.slice(0, limit));
+  const lang = sanitizeLang(req.query.lang);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 8, 1), 500);
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const rawOffset =
+    req.query.offset !== undefined
+      ? Math.max(parseInt(req.query.offset, 10) || 0, 0)
+      : (page - 1) * limit;
+  const start = rawOffset;
+
+  const pool = await getArtistPool(lang);
+
+  return ApiResponse.success(res, pool.slice(start, start + limit));
 });
 
 const searchArtists = asyncHandler(async (req, res) => {
@@ -45,14 +29,59 @@ const searchArtists = asyncHandler(async (req, res) => {
 });
 
 const getArtistById = asyncHandler(async (req, res) => {
-  const artist = await saavnService.getArtistById(req.params.id);
+  // JioSaavn doesn't serve every artist (and its IDs differ from YouTube
+  // Music channel IDs), so fall back to YT Music when Saavn can't resolve it.
+  let artist = await saavnService.getArtistById(req.params.id);
+  if (!artist) artist = await ytService.getArtistById(req.params.id);
   if (!artist) return ApiResponse.error(res, "Artist not found", 404);
   return ApiResponse.success(res, artist);
 });
 
+// Upstream serves artist albums in small pages (~10 entries each), so we
+// simply keep walking pages until nothing new comes back.
+const ARTIST_ALBUM_MAX_PAGES = 40;
+
 const getArtistAlbums = asyncHandler(async (req, res) => {
-  const data = await saavnService.getArtistAlbums(req.params.id);
-  return ApiResponse.success(res, data.results || []);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 500);
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const rawOffset =
+    req.query.offset !== undefined
+      ? Math.max(parseInt(req.query.offset, 10) || 0, 0)
+      : (page - 1) * limit;
+  const start = Math.min(rawOffset, 500 - limit);
+  const wanted = Math.min(start + limit, 500);
+  const seen = new Set();
+  const results = [];
+  let total = Infinity;
+
+  for (let upPage = 0; upPage < ARTIST_ALBUM_MAX_PAGES && results.length < wanted; upPage += 1) {
+    let batch = [];
+    try {
+      const data = await saavnService.getArtistAlbums(req.params.id, {
+        page: upPage,
+        limit: 50,
+      });
+      batch = data.results || [];
+      if (data.total > 0) total = data.total;
+    } catch (err) {
+      logger.warn({ err: { message: err.message }, upPage, artistId: req.params.id }, "artist.getArtistAlbums page failed");
+      break;
+    }
+    if (!batch.length) break;
+
+    let fresh = 0;
+    for (const album of batch) {
+      if (!album || !album.id || seen.has(album.id)) continue;
+      seen.add(album.id);
+      results.push(album);
+      fresh += 1;
+    }
+
+    // A page with no new albums means upstream started repeating itself.
+    if (!fresh) break;
+  }
+
+  return ApiResponse.success(res, results.slice(start, start + limit));
 });
 
 const getArtistTracks = asyncHandler(async (req, res) => {
@@ -66,4 +95,7 @@ module.exports = {
   getArtistById,
   getArtistAlbums,
   getArtistTracks,
+  // Reused by /api/discover so the trending-artist cards match the
+  // "artists on the rise" roster (same TTL + day rotation per lang).
+  getArtistPool,
 };

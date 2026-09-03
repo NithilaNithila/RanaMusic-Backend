@@ -35,13 +35,26 @@ const playlistSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    language: {
+      type: String,
+      default: "hi",
+      index: true,
+    },
     isPublic: {
       type: Boolean,
       default: false,
+      index: true,
     },
     tracks: [trackSnapshotSchema],
   },
   { timestamps: true }
 );
+
+// Composite indexes for the most common public/browse queries:
+// - GET /public?language=hi  sorted by createdAt
+// - GET /all  -> user OR public
+playlistSchema.index({ isPublic: 1, createdAt: -1 });
+playlistSchema.index({ language: 1, isPublic: 1, createdAt: -1 });
+playlistSchema.index({ user: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Playlist", playlistSchema);
