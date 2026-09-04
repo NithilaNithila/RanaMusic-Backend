@@ -27,14 +27,13 @@ const errorHandler = (err, req, res, next) => {
   // Mongoose bad ObjectId
   if (err.name === "CastError") {
     statusCode = 400;
-    message = `Invalid ${err.path}`;
+    message = "Invalid value provided";
   }
 
   // Mongoose duplicate key
   if (err.code === 11000) {
     statusCode = 409;
-    const field = Object.keys(err.keyValue || {})[0];
-    message = `Duplicate value for field: ${field}`;
+    message = "Duplicate value provided";
   }
 
   // Mongoose validation error
@@ -75,8 +74,7 @@ const errorHandler = (err, req, res, next) => {
   return ApiResponse.error(
     res,
     message,
-    statusCode,
-    process.env.NODE_ENV === "development" ? err.stack : undefined
+    statusCode
   );
 };
 

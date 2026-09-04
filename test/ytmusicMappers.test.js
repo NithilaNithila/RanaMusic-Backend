@@ -10,8 +10,8 @@ const {
   normalizePlaylist,
 } = require("../src/services/ytmusic.mappers");
 
-test("getImage returns last thumbnail or empty", () => {
-  assert.strictEqual(getImage([{ url: "a" }, { url: "b" }]), "b");
+test("getImage returns first (largest) thumbnail or empty", () => {
+  assert.strictEqual(getImage([{ url: "a" }, { url: "b" }]), "a");
   assert.strictEqual(getImage([]), "");
   assert.strictEqual(getImage(null), "");
 });

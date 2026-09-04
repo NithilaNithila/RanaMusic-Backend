@@ -45,7 +45,7 @@ test("searchTracks falls back to JioSaavn on 429 upstream", async () => {
   let calls = 0;
   axiosMock.setHandler(() => {
     calls += 1;
-    if (calls === 1) return Promise.reject(Object.assign(new Error("rl"), { isAxiosError: true, response: { status: 429 } }));
+    if (calls <= 3) return Promise.reject(Object.assign(new Error("rl"), { isAxiosError: true, response: { status: 429 } }));
     return Promise.resolve({ data: { results: [{ id: "j1", song: "J", primary_artists: "A", album: "Al" }] } });
   });
   const out = await saavn.searchTracks("q", {});
@@ -53,7 +53,7 @@ test("searchTracks falls back to JioSaavn on 429 upstream", async () => {
 });
 
 test("searchAlbums maps results", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { data: { results: [{ id: "al", name: "A", artists: { primary: [] } }], total: 1 } } }));
+  axiosMock.setHandler(() => Promise.resolve({ data: { data: { results: [{ id: "al", name: "A", artists: { primary: [] }, image: [{ quality: "500x500", url: "http://img" }] }], total: 1 } } }));
   const out = await saavn.searchAlbums("q", {});
   assert.strictEqual(out.results[0].id, "al");
 });

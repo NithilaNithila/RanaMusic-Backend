@@ -19,7 +19,7 @@ const SEED_BLOCKS_PER_DAY = 3;
 // request, which used to cause overlapping pages).
 const ARTIST_POOL_TTL_MS = 10 * 60 * 1000;
 let artistPoolCache = { builtAt: 0, list: null, dayIndex: -1, lang: null };
-let artistPoolPromise = null;
+const artistPoolPromises = new Map();
 
 // Builds (once, per TTL, per calendar day and per language) the full
 // deduped "artists on the rise" pool and returns the frozen list. Shared by
@@ -34,9 +34,10 @@ const getArtistPool = async (lang = "hi") => {
   ) {
     return artistPoolCache.list;
   }
-  if (artistPoolPromise) return artistPoolPromise;
+  const inflightKey = lang || "hi";
+  if (artistPoolPromises.has(inflightKey)) return artistPoolPromises.get(inflightKey);
 
-  artistPoolPromise = (async () => {
+  const promise = (async () => {
     const seeds = pickBlocks(
       ARTIST_SEEDS[lang] || ARTIST_SEEDS.hi,
       ARTIST_CHUNK,
@@ -82,10 +83,11 @@ const getArtistPool = async (lang = "hi") => {
     artistPoolCache = { builtAt: Date.now(), list, dayIndex: today, lang };
     return list;
   })().finally(() => {
-    artistPoolPromise = null;
+    artistPoolPromises.delete(inflightKey);
   });
 
-  return artistPoolPromise;
+  artistPoolPromises.set(inflightKey, promise);
+  return promise;
 };
 
 module.exports = { getArtistPool };

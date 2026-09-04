@@ -6,7 +6,7 @@ const validate = require("../middleware/validate.middleware");
 const { register, login, getMe, deleteMe, forgotPassword, resetPassword } = require("../controllers/auth.controller");
 
 // register must reject a non-string username before the controller destructures
-// it, while password length is enforced by the 6–72 cap in the validator.
+// it, while password length is enforced by the 8–72 cap in the validator.
 router.post(
   "/register",
   authLimiter,

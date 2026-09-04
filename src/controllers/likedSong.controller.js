@@ -48,6 +48,18 @@ const addLikedSong = asyncHandler(async (req, res) => {
   if (typeof track.id !== "string" || (track.name !== undefined && typeof track.name !== "string")) {
     return ApiResponse.error(res, "track.id and track.name must be strings", 400);
   }
+  if (track.artist_name !== undefined && typeof track.artist_name !== "string") {
+    return ApiResponse.error(res, "track.artist_name must be a string", 400);
+  }
+  if (track.image !== undefined && typeof track.image !== "string") {
+    return ApiResponse.error(res, "track.image must be a string", 400);
+  }
+  if (track.audio !== undefined && typeof track.audio !== "string") {
+    return ApiResponse.error(res, "track.audio must be a string", 400);
+  }
+  if (track.duration !== undefined && typeof track.duration !== "number") {
+    return ApiResponse.error(res, "track.duration must be a number", 400);
+  }
 
   const existing = await LikedSong.findOne({
     user: req.user._id,

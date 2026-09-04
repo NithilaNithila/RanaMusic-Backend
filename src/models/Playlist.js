@@ -1,19 +1,5 @@
 const mongoose = require("mongoose");
 
-// Tracks come from Jamendo, so we store just enough info to render them
-// without re-fetching, plus the Jamendo track id as the source of truth.
-const trackSnapshotSchema = new mongoose.Schema(
-  {
-    jamendoId: { type: String, required: true },
-    name: String,
-    artistName: String,
-    albumImage: String,
-    audioUrl: String,
-    duration: Number,
-  },
-  { _id: false }
-);
-
 const playlistSchema = new mongoose.Schema(
   {
     user: {
@@ -26,10 +12,12 @@ const playlistSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 100,
     },
     description: {
       type: String,
       default: "",
+      maxlength: 500,
     },
     coverImage: {
       type: String,
@@ -45,7 +33,6 @@ const playlistSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
-    tracks: [trackSnapshotSchema],
   },
   { timestamps: true }
 );

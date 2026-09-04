@@ -1,6 +1,8 @@
 const getImage = (thumbnails) => {
   if (!Array.isArray(thumbnails) || !thumbnails.length) return "";
-  return thumbnails[thumbnails.length - 1]?.url || "";
+  // YouTube Music returns thumbnails sorted smallest to largest; pick the
+  // largest (first element) for best quality.
+  return thumbnails[0]?.url || "";
 };
 
 const parseDuration = (value) => {

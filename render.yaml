@@ -29,3 +29,13 @@ services:
         value: https://youtube-music-api-c2p9.onrender.com
       - key: AMAZON_API_BASE
         value: https://amazon-music-api.onrender.com/api
+      - key: MIN_APP_VERSION
+        value: "1.0.0"
+      - key: LATEST_APP_VERSION
+        value: "2.0.0"
+      - key: APP_UPDATE_MESSAGE
+        value: "A newer version of RanaMusic is available. Please update to continue."
+      - key: ANDROID_STORE_URL
+        value: https://play.google.com/store/apps/details?id=com.ranamusic.app
+      - key: IOS_STORE_URL
+        value: https://apps.apple.com/app/id0000000000

@@ -2,6 +2,7 @@ const axios = require("axios");
 const amazonConfig = require("../config/amazon");
 const { httpAgent, httpsAgent } = require("../config/http");
 const { getCache, setCache, makeCacheKey } = require("./cache.service");
+const { retry } = require("../utils/retry");
 const {
   normalizeTrack,
   normalizeAlbum,
@@ -35,20 +36,28 @@ const amzGet = async (path, params = {}) => {
   const cached = getCache(cacheKey);
   if (cached) return cached;
 
-  let data;
-  try {
-    const res = await client.get(path, { params });
-    data = res.data;
-  } catch (err) {
-    if (err.response) {
-      throw new AmazonError(
-        err.response.data?.message ||
-          `Amazon API ${err.response.status} on ${path}`,
-        err.response.status
-      );
+  const data = await retry(
+    async () => {
+      try {
+        const res = await client.get(path, { params });
+        return res.data;
+      } catch (err) {
+        if (err.response) {
+          throw new AmazonError(
+            err.response.data?.message ||
+              `Amazon API ${err.response.status} on ${path}`,
+            err.response.status
+          );
+        }
+        throw new AmazonError(`Amazon API unreachable on ${path}`);
+      }
+    },
+    {
+      retries: 2,
+      baseMs: 400,
+      shouldRetry: (err) => !(err instanceof AmazonError && err.status < 500 && err.status !== 429),
     }
-    throw new AmazonError(`Amazon API unreachable on ${path}`);
-  }
+  );
 
   if (!data || data.success === false) {
     throw new AmazonError(data?.message || `Amazon API error on ${path}`);

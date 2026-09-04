@@ -11,6 +11,10 @@ const LikedSong = require("../models/LikedSong");
 const generateToken = require("../utils/generateToken");
 const { delCache } = require("../services/cache.service");
 const { userCacheKey } = require("../middleware/auth.middleware");
+const { logger } = require("../services/logger.service");
+
+const { sendPasswordResetEmail } = require("../services/email.service");
+const { recordFailure, clearFailures, getLockRemaining } = require("../utils/loginProtection");
 
 const RESET_EXPIRES_IN = "15m"; // reset tokens are deliberately short-lived
 
@@ -49,12 +53,32 @@ const register = asyncHandler(async (req, res) => {
 // POST /api/auth/login
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
+  const normalizedEmail = String(email || "").toLowerCase().trim();
 
-  const user = await User.findOne({ email }).select("+password");
-  if (!user) return ApiResponse.error(res, "Invalid email or password", 401);
+  // Check if the account is temporarily locked due to brute-force attempts.
+  const lockRemaining = getLockRemaining(normalizedEmail);
+  if (lockRemaining) {
+    return ApiResponse.error(
+      res,
+      `Too many failed attempts. Try again in ${lockRemaining} seconds.`,
+      429
+    );
+  }
+
+  const user = await User.findOne({ email: normalizedEmail }).select("+password");
+  if (!user) {
+    recordFailure(normalizedEmail);
+    return ApiResponse.error(res, "Invalid email or password", 401);
+  }
 
   const isMatch = await user.comparePassword(password);
-  if (!isMatch) return ApiResponse.error(res, "Invalid email or password", 401);
+  if (!isMatch) {
+    recordFailure(normalizedEmail);
+    return ApiResponse.error(res, "Invalid email or password", 401);
+  }
+
+  // Successful login — clear any failed attempt counter.
+  clearFailures(normalizedEmail);
 
   const token = generateToken(user._id);
 
@@ -71,7 +95,13 @@ const login = asyncHandler(async (req, res) => {
 
 // GET /api/auth/me
 const getMe = asyncHandler(async (req, res) => {
-  return ApiResponse.success(res, req.user);
+  const u = req.user;
+  return ApiResponse.success(res, {
+    id: u._id,
+    username: u.username,
+    email: u.email,
+    avatarUrl: u.avatarUrl,
+  });
 });
 
 // DELETE /api/auth/me
@@ -79,11 +109,11 @@ const deleteMe = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const playlistIds = await Playlist.find({ user: userId }).distinct("_id");
 
+  // Prefer a single transaction so deletion is atomic. Falls back to
+  // sequential deletes when the backing store (e.g. shared/free Atlas
+  // clusters) doesn't support multi-document transactions.
+  const session = await Playlist.startSession();
   try {
-    // Prefer a single transaction so deletion is atomic. Falls back to
-    // sequential deletes when the backing store (e.g. shared/free Atlas
-    // clusters) doesn't support multi-document transactions.
-    const session = await Playlist.startSession();
     await session.withTransaction(async () => {
       await PlaylistTrack.deleteMany({ playlist: { $in: playlistIds } }, { session });
       await Playlist.deleteMany({ user: userId }, { session });
@@ -92,7 +122,6 @@ const deleteMe = asyncHandler(async (req, res) => {
       await LikedSong.deleteMany({ user: userId }, { session });
       await User.deleteOne({ _id: userId }, { session });
     });
-    await session.endSession();
   } catch (err) {
     const unsupported = /Transaction numbers are only allowed on a replica set member/i.test(err?.message);
     if (!unsupported) throw err;
@@ -105,6 +134,8 @@ const deleteMe = asyncHandler(async (req, res) => {
       LikedSong.deleteMany({ user: userId }),
     ]);
     await User.findByIdAndDelete(userId);
+  } finally {
+    await session.endSession();
   }
 
   // Drop the in-memory auth cache so the deleted account can't keep using
@@ -116,12 +147,8 @@ const deleteMe = asyncHandler(async (req, res) => {
 
 // POST /api/auth/forgot-password
 // Issues a short-lived, single-purpose reset token for the account matching
-// `email`. The token is NEVER returned in the response body: this backend has
-// no mail transport, so the response is deliberately uniform whether or not the
-// account exists. This removes both the account-enumeration oracle and the
-// account-takeover vector (an unauthenticated caller cannot obtain a live reset
-// token for someone else's account). To make password reset functional, deliver
-// the token via an email service (or equivalent out-of-band channel).
+// `email` and delivers it via email. The response is deliberately uniform
+// whether or not the account exists to prevent account enumeration.
 const forgotPassword = asyncHandler(async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
   if (!email) return ApiResponse.error(res, "email is required", 400);
@@ -129,12 +156,11 @@ const forgotPassword = asyncHandler(async (req, res) => {
   const user = await User.findOne({ email }).select("_id");
   if (!user) {
     // Do not reveal whether an account exists (account-enumeration protection).
-    return ApiResponse.success(res, {}, "If that account exists, a reset link has been issued");
+    return ApiResponse.success(res, {}, "If that account exists, a reset link has been sent");
   }
 
-  // Generate the token but do not expose it to the caller. In production, a
-  // mail transport should send it to `email` out-of-band.
-  jwt.sign(
+  // Generate a short-lived reset token and deliver via email.
+  const resetToken = jwt.sign(
     {
       sub: user._id.toString(),
       type: "password-reset",
@@ -145,7 +171,15 @@ const forgotPassword = asyncHandler(async (req, res) => {
   );
 
   delCache(userCacheKey(user._id));
-  return ApiResponse.success(res, {}, "If that account exists, a reset link has been issued");
+
+  // Deliver the reset link via email (falls back to console log in dev).
+  try {
+    await sendPasswordResetEmail({ to: email, resetToken, expiresIn: RESET_EXPIRES_IN });
+  } catch (err) {
+    logger.warn({ err: { message: err.message } }, "Failed to send reset email");
+  }
+
+  return ApiResponse.success(res, {}, "If that account exists, a reset link has been sent");
 });
 
 // POST /api/auth/reset-password
@@ -154,8 +188,8 @@ const resetPassword = asyncHandler(async (req, res) => {
   if (!token || !newPassword) {
     return ApiResponse.error(res, "token and newPassword are required", 400);
   }
-  if (String(newPassword).length < 6 || String(newPassword).length > 72) {
-    return ApiResponse.error(res, "New password must be between 6 and 72 characters", 400);
+  if (String(newPassword).length < 8 || String(newPassword).length > 72) {
+    return ApiResponse.error(res, "New password must be between 8 and 72 characters", 400);
   }
 
   let payload;

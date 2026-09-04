@@ -40,6 +40,7 @@ const getArtistById = asyncHandler(async (req, res) => {
 // Upstream serves artist albums in small pages (~10 entries each), so we
 // simply keep walking pages until nothing new comes back.
 const ARTIST_ALBUM_MAX_PAGES = 40;
+const ARTIST_ALBUM_TIMEOUT_MS = 15000;
 
 const getArtistAlbums = asyncHandler(async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 500);
@@ -53,8 +54,13 @@ const getArtistAlbums = asyncHandler(async (req, res) => {
   const seen = new Set();
   const results = [];
   let total = Infinity;
+  const deadline = Date.now() + ARTIST_ALBUM_TIMEOUT_MS;
 
   for (let upPage = 0; upPage < ARTIST_ALBUM_MAX_PAGES && results.length < wanted; upPage += 1) {
+    if (Date.now() > deadline) {
+      logger.warn({ upPage, artistId: req.params.id }, "artist.getArtistAlbums timed out");
+      break;
+    }
     let batch = [];
     try {
       const data = await saavnService.getArtistAlbums(req.params.id, {

@@ -6,7 +6,7 @@ const search = asyncHandler(async (req, res) => {
   const { q, type, limit, page } = req.query;
   if (!q) return ApiResponse.error(res, "Query param 'q' is required", 400);
   const data = await amazonService.search(q, { type, limit, page });
-  return ApiResponse.success(res, data.results, `Found ${data.total} results`);
+  return ApiResponse.success(res, data.results || [], `Found ${data.total} results`);
 });
 
 const getTrackById = asyncHandler(async (req, res) => {

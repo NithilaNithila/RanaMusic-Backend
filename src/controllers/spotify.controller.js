@@ -86,7 +86,7 @@ const search = asyncHandler(async (req, res) => {
   const { q, type, limit, offset } = req.query;
   if (!q) return ApiResponse.error(res, "Query param 'q' is required", 400);
   const data = await spotifyService.search(q, { type, limit, offset });
-  return ApiResponse.success(res, data.results, `Found ${data.total} results`);
+  return ApiResponse.success(res, data.results || [], `Found ${data.total} results`);
 });
 
 const getTrackById = asyncHandler(async (req, res) => {
@@ -116,7 +116,7 @@ const getArtistById = asyncHandler(async (req, res) => {
 const getArtistTopTracks = asyncHandler(async (req, res) => {
   const { market } = req.query;
   const data = await spotifyService.getArtistTopTracks(req.params.id, { market });
-  return ApiResponse.success(res, data.results || []);
+  return ApiResponse.success(res, data?.results || []);
 });
 
 const getArtistAlbums = asyncHandler(async (req, res) => {
@@ -126,7 +126,7 @@ const getArtistAlbums = asyncHandler(async (req, res) => {
     limit,
     offset,
   });
-  return ApiResponse.success(res, data.results || []);
+  return ApiResponse.success(res, data?.results || []);
 });
 
 const getPlaylistById = asyncHandler(async (req, res) => {

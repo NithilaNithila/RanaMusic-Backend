@@ -2,6 +2,7 @@ const axios = require("axios");
 const { httpAgent, httpsAgent } = require("../config/http");
 const { logger } = require("./logger.service");
 const { getCache, setCache, makeCacheKey } = require("./cache.service");
+const { retry } = require("../utils/retry");
 
 const client = axios.create({
   timeout: 8000,
@@ -21,9 +22,15 @@ const getLyrics = async (artist, title) => {
   if (cached) return cached;
 
   try {
-    const { data } = await client.get("https://lrclib.net/api/get", {
-      params: { artist_name: artist, track_name: title },
-    });
+    const data = await retry(
+      async () => {
+        const res = await client.get("https://lrclib.net/api/get", {
+          params: { artist_name: artist, track_name: title },
+        });
+        return res.data;
+      },
+      { retries: 1, baseMs: 300 }
+    );
     const lyrics = data?.plainLyrics || data?.syncedLyrics || null;
     if (lyrics) setCache(cacheKey, lyrics);
     return lyrics;

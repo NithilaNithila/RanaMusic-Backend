@@ -2,6 +2,7 @@ const axios = require("axios");
 const spotifyConfig = require("../config/spotify");
 const { httpAgent, httpsAgent } = require("../config/http");
 const { getCache, setCache, makeCacheKey } = require("./cache.service");
+const { retry } = require("../utils/retry");
 const {
   normalizeTrack,
   normalizeAlbum,
@@ -35,19 +36,27 @@ const wxfGet = async (path, params = {}) => {
   const cached = getCache(cacheKey);
   if (cached) return cached;
 
-  let data;
-  try {
-    const res = await client.get(path, { params });
-    data = res.data;
-  } catch (err) {
-    if (err.response) {
-      throw new UpstreamError(
-        err.response.data?.error || `wolfXspotify ${err.response.status} on ${path}`,
-        err.response.status
-      );
+  const data = await retry(
+    async () => {
+      try {
+        const res = await client.get(path, { params });
+        return res.data;
+      } catch (err) {
+        if (err.response) {
+          throw new UpstreamError(
+            err.response.data?.error || `wolfXspotify ${err.response.status} on ${path}`,
+            err.response.status
+          );
+        }
+        throw new UpstreamError(`wolfXspotify unreachable on ${path}`);
+      }
+    },
+    {
+      retries: 2,
+      baseMs: 400,
+      shouldRetry: (err) => !(err instanceof UpstreamError && err.status < 500 && err.status !== 429),
     }
-    throw new UpstreamError(`wolfXspotify unreachable on ${path}`);
-  }
+  );
 
   if (!data || data.success === false) {
     throw new UpstreamError(data?.error || `wolfXspotify error on ${path}`);

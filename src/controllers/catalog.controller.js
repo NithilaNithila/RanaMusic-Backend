@@ -42,7 +42,6 @@ const CATALOG_CAP = 500;
 // (see getDayIndex) and the cache TTL is kept modest. A new day => a new build
 // even if the underlying provider catalogs are stable.
 const CATALOG_TTL_SECONDS = 60 * 60; // 1 hour (day-key already forces a daily rebuild)
-const cacheKey = makeCacheKey("catalog:playlists", { day: getDayIndex() });
 
 const fetchQueryPlaylists = (service, q) =>
   service
@@ -140,6 +139,7 @@ const enrichMissingImages = async (playlists) => {
 
 const getCatalogPlaylists = asyncHandler(async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 24, 1), CATALOG_CAP);
+  const cacheKey = makeCacheKey("catalog:playlists", { day: getDayIndex() });
 
   const cached = getCache(cacheKey);
   if (cached) return ApiResponse.success(res, cached.slice(0, limit));

@@ -27,13 +27,13 @@ test("notFound builds a 404 error and forwards it", () => {
   assert.match(nextErr.message, /\/api\/x/);
 });
 
-test("errorHandler returns 500 for a generic error and passes stack in development", () => {
+test("errorHandler returns 500 for a generic error without exposing stack in response", () => {
   process.env.NODE_ENV = "development";
   const { req, res } = mk();
   errorHandler(new Error("boom"), req, res, () => {});
   assert.strictEqual(res.sc, 500);
   assert.strictEqual(res.js.message, "boom");
-  assert.ok(typeof res.js.errors === "string");
+  assert.strictEqual(res.js.errors, null);
 });
 
 test("errorHandler maps Mongoose CastError to 400", () => {
@@ -44,7 +44,7 @@ test("errorHandler maps Mongoose CastError to 400", () => {
   err.path = "playlistId";
   errorHandler(err, req, res, () => {});
   assert.strictEqual(res.sc, 400);
-  assert.match(res.js.message, /playlistId/);
+  assert.match(res.js.message, /Invalid value provided/);
 });
 
 test("errorHandler maps duplicate key to 409", () => {
@@ -55,7 +55,7 @@ test("errorHandler maps duplicate key to 409", () => {
   err.keyValue = { username: "x" };
   errorHandler(err, req, res, () => {});
   assert.strictEqual(res.sc, 409);
-  assert.match(res.js.message, /username/);
+  assert.match(res.js.message, /Duplicate value provided/);
 });
 
 test("errorHandler maps ValidationError to 400 with joined messages", () => {

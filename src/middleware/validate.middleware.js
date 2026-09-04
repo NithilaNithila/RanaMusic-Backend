@@ -7,7 +7,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const LENGTH_LIMITS = {
   username: { min: 3, max: 30 },
   email: { min: 3, max: 254 },
-  password: { min: 6, max: 72 }, // bcrypt truncates past 72 bytes
+  password: { min: 8, max: 72 }, // bcrypt truncates past 72 bytes
   name: { min: 1, max: 200 },
   description: { min: 0, max: 1000 },
 };

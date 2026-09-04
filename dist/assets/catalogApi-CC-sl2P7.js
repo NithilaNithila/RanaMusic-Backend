@@ -1,0 +1,1 @@
+import{b as l}from"./index-TRmTRRue.js";const o={spotify:"/spotify",ytmusic:"/ytmusic",amazon:"/amazon"},c=(t,a,s={})=>l.get(`${o[t]}/playlists/${a}`,{params:s}),g=(t,a,s={})=>l.get(`${o[t]}/playlists/${a}/tracks`,{params:s}),y=(t={})=>l.get("/playlists/catalog",{params:t}).then(a=>a.data||[]);export{g as a,y as f,c as g};

@@ -29,12 +29,12 @@ app.set("etag", "weak"); // enable ETags for conditional GETs (304 responses)
 app.use((req, res, next) => {
   const start = process.hrtime.bigint();
   const writeHead = res.writeHead.bind(res);
-  res.writeHead = (statusCode, headers) => {
+  res.writeHead = (...args) => {
     if (!res.headersSent) {
       const ms = Number(process.hrtime.bigint() - start) / 1e6;
       res.setHeader("X-Response-Time", `${ms.toFixed(1)}ms`);
     }
-    return writeHead(statusCode, headers);
+    return writeHead(...args);
   };
   res.on("finish", () => {
     const ms = Number(process.hrtime.bigint() - start) / 1e6;
@@ -93,12 +93,19 @@ const allowedOrigins = (process.env.CLIENT_URL || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// In production, fail loudly if CLIENT_URL is not configured to avoid
+// accidentally leaving CORS wide open.
+if (process.env.NODE_ENV === "production" && allowedOrigins.length === 0) {
+  logger.fatal("CLIENT_URL must be set in production — CORS would be wide open");
+  process.exit(1);
+}
+
 app.use(
   cors({
     origin(origin, cb) {
       // Allow same-origin / non-browser clients (curl, mobile) that send no
       // Origin header, and any explicitly allow-listed origin.
-      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      if (!origin || allowedOrigins.includes(origin)) {
         return cb(null, true);
       }
       return cb(null, false);

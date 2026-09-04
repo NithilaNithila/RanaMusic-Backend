@@ -8,29 +8,54 @@
 // duplicate upstream calls, identical data.
 const { makeCacheKey, memoize } = require("../services/cache.service");
 const { pick } = require("./dayRotation");
+const { logger } = require("../services/logger.service");
 
-// Walks pages of a single (day-picked) query and returns a deduplicated list.
-// The query is chosen by day, so the returned set naturally changes daily.
+// Walks pages of queries and returns a deduplicated list.  Starts with the
+// day-picked query; if it yields zero results on the first page, the next
+// query from the list is tried (up to all queries) so a bad upstream query
+// never leaves the pool empty.
 const aggregatePool = async (
   searchFn, // e.g. saavnService.searchTracks / searchAlbums
   queryList, // e.g. TRACK_QUERIES[lang] / ALBUM_QUERIES[lang]
   { pageSize = 40, maxPages = 15, cap = 500 } = {}
 ) => {
-  const query = pick(queryList);
+  const startIndex = queryList.indexOf(pick(queryList));
   const seen = new Set();
   const aggregated = [];
 
-  for (let upPage = 0; upPage < maxPages && aggregated.length < cap; upPage++) {
-    const data = await searchFn(query, { page: upPage, limit: pageSize });
-    const results = data.results || [];
-    for (const item of results) {
-      if (!item || !item.id || seen.has(item.id)) continue;
-      seen.add(item.id);
-      aggregated.push(item);
-      if (aggregated.length >= cap) break;
+  // Try queries starting from the day-picked one, wrapping around the list.
+  for (let qi = 0; qi < queryList.length && aggregated.length < cap; qi++) {
+    const query = queryList[(startIndex + qi) % queryList.length];
+    let consecutiveEmpty = 0;
+
+    for (let upPage = 0; upPage < maxPages && aggregated.length < cap; upPage++) {
+      let results = [];
+      try {
+        const data = await searchFn(query, { page: upPage, limit: pageSize });
+        results = data.results || [];
+      } catch (err) {
+        logger.warn(
+          { err: { message: err.message }, query, page: upPage },
+          "Pool aggregation page fetch failed, skipping"
+        );
+        consecutiveEmpty++;
+        if (consecutiveEmpty >= 3) break;
+        continue;
+      }
+
+      consecutiveEmpty = results.length === 0 ? consecutiveEmpty + 1 : 0;
+
+      for (const item of results) {
+        if (!item || !item.id || seen.has(item.id)) continue;
+        seen.add(item.id);
+        aggregated.push(item);
+        if (aggregated.length >= cap) break;
+      }
+      if (results.length < pageSize) break;
     }
-    // A short page means the source is exhausted for this query.
-    if (results.length < pageSize) break;
+
+    // Got results from this query — no need to try more queries.
+    if (aggregated.length > 0) break;
   }
 
   return aggregated;

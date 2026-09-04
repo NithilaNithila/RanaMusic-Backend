@@ -203,6 +203,11 @@ const getAllPlaylists = asyncHandler(async (req, res) => {
 const createPlaylist = asyncHandler(async (req, res) => {
   const { name, description, isPublic, coverImage, language } = req.body;
   if (!name) return ApiResponse.error(res, "Playlist name is required", 400);
+  if (typeof name !== "string") return ApiResponse.error(res, "Playlist name must be a string", 400);
+  if (name.trim().length < 1 || name.trim().length > 100) return ApiResponse.error(res, "Playlist name must be 1-100 characters", 400);
+  if (description !== undefined && typeof description !== "string") return ApiResponse.error(res, "Description must be a string", 400);
+  if (description && description.length > 500) return ApiResponse.error(res, "Description must be at most 500 characters", 400);
+  if (language !== undefined && language !== "" && !LANGUAGES[language]) return ApiResponse.error(res, "Invalid language value", 400);
 
   const playlist = await Playlist.create({
     user: req.user._id,
@@ -227,11 +232,24 @@ const updatePlaylist = asyncHandler(async (req, res) => {
   }
 
   const { name, description, isPublic, coverImage, language } = req.body;
-  if (name !== undefined) playlist.name = name;
-  if (description !== undefined) playlist.description = description;
+  if (name !== undefined) {
+    if (typeof name !== "string" || name.trim().length < 1 || name.trim().length > 100) {
+      return ApiResponse.error(res, "Playlist name must be 1-100 characters", 400);
+    }
+    playlist.name = name;
+  }
+  if (description !== undefined) {
+    if (typeof description !== "string" || description.length > 500) {
+      return ApiResponse.error(res, "Description must be at most 500 characters", 400);
+    }
+    playlist.description = description;
+  }
   if (isPublic !== undefined) playlist.isPublic = isPublic;
   if (coverImage !== undefined) playlist.coverImage = coverImage;
-  if (language !== undefined) playlist.language = language;
+  if (language !== undefined) {
+    if (language !== "" && !LANGUAGES[language]) return ApiResponse.error(res, "Invalid language value", 400);
+    playlist.language = language;
+  }
 
   await playlist.save();
   invalidatePlaylistCaches();

@@ -7,7 +7,7 @@ const connectDB = async () => {
       // Connection pooling + performance tuning:
       maxPoolSize: 20,          // Reuse connections instead of new ones per query
       minPoolSize: 2,           // Keep warm connections ready
-      serverSelectionTimeoutMS: 5000,  // Fail fast instead of hanging
+      serverSelectionTimeoutMS: 10000,  // Fail fast instead of hanging
       timeoutMS: 45000,         // Don't let slow queries block the pool
       autoIndex: process.env.NODE_ENV !== "production", // Auto-create indexes only in dev
       maxIdleTimeMS: 10000,     // Recycle idle connections

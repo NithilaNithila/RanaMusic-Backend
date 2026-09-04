@@ -16,5 +16,6 @@ router.use("/saavn", require("./saavn.routes"));
 router.use("/spotify", require("./spotify.routes"));
 router.use("/amazon", require("./amazon.routes"));
 router.use("/ytmusic", require("./ytmusic.routes"));
+router.use("/app-version", require("./version.routes"));
 
 module.exports = router;

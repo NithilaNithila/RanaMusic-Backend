@@ -39,7 +39,7 @@ const happyHandler = () => (path, config) => {
   }
   if (path === "/search/albums") {
     return Promise.resolve({
-      data: { data: { results: [{ id: "a1", name: "Album 1", primary_artists: "X" }], total: 1 } },
+      data: { data: { results: [{ id: "a1", name: "Album 1", primary_artists: "X", image: [{ quality: "500x500", url: "http://img" }] }], total: 1 } },
     });
   }
   if (path === "/search/artists") {

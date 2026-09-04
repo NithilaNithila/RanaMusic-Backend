@@ -3,6 +3,7 @@ const ytConfig = require("../config/ytmusic");
 const { httpAgent, httpsAgent } = require("../config/http");
 const { logger } = require("./logger.service");
 const { getCache, setCache, makeCacheKey } = require("./cache.service");
+const { retry } = require("../utils/retry");
 const {
   normalizeTrack,
   normalizeAlbum,
@@ -36,18 +37,29 @@ const ytGet = async (path, params = {}) => {
   const cached = getCache(cacheKey);
   if (cached) return cached;
 
-  let data;
-  try {
-    const res = await client.get(path, { params });
-    data = res.data;
-  } catch (err) {
-    const status = err.response?.status;
-    throw new YtUpstreamError(
-      err.response?.data?.detail || `ytmusic ${status || "unreachable"} on ${path}`,
-      status || 502
-    );
+  const data = await retry(
+    async () => {
+      try {
+        const res = await client.get(path, { params });
+        return res.data;
+      } catch (err) {
+        const status = err.response?.status;
+        throw new YtUpstreamError(
+          err.response?.data?.detail || `ytmusic ${status || "unreachable"} on ${path}`,
+          status || 502
+        );
+      }
+    },
+    {
+      retries: 2,
+      baseMs: 400,
+      shouldRetry: (err) => !(err instanceof YtUpstreamError && err.status < 500 && err.status !== 429),
+    }
+  );
+  // Only cache valid responses — skip error payloads that arrived with HTTP 200.
+  if (data && (Array.isArray(data) || typeof data === "object") && !data.error) {
+    setCache(cacheKey, data);
   }
-  setCache(cacheKey, data);
   return data;
 };
 

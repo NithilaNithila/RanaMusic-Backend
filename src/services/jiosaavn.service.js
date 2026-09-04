@@ -5,6 +5,7 @@ const { normalizeTrack, normalizeAlbum, normalizeArtist } = require("./saavn.map
 const { logger } = require("./logger.service");
 const { getCache, setCache, makeCacheKey } = require("./cache.service");
 const { sanitizePagination } = require("../utils/pagination");
+const { retry } = require("../utils/retry");
 
 const API_BASE = "https://www.jiosaavn.com/api.php";
 const DECRYPT_KEY = "38346591";
@@ -25,14 +26,20 @@ const jiosaavnGet = async (call, params = {}, { includeCtx = true } = {}) => {
   if (cached) return cached;
 
   const extra = includeCtx ? { _marker: "0", api_version: "4", ctx: "web6dot0" } : {};
-  const { data } = await client.get(API_BASE, {
-    params: {
-      __call: call,
-      _format: "json",
-      ...extra,
-      ...params,
+  const data = await retry(
+    async () => {
+      const res = await client.get(API_BASE, {
+        params: {
+          __call: call,
+          _format: "json",
+          ...extra,
+          ...params,
+        },
+      });
+      return res.data;
     },
-  });
+    { retries: 2, baseMs: 300 }
+  );
 
   setCache(cacheKey, data);
   return data;
@@ -262,12 +269,13 @@ const getLyrics = async (id) => {
 };
 
 // Same fuzzy matching as saavn.service — direct JioSaavn search + lyrics.
+// Unicode-aware: preserves letters from any script (Hindi, Tamil, etc.)
 const normalizeName = (s) =>
   String(s || "")
     .toLowerCase()
     .replace(/\s*\(.*?\)\s*/g, " ")
     .replace(/\s*-\s*(original|official|full video|lyric|ft\.?)\s*.*/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 

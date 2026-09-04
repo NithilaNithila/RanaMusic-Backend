@@ -1,5 +1,9 @@
 require("dotenv").config();
-const dns = require("dns/promises");
+
+// Route DNS through Google to fix SRV resolution on networks with broken DNS
+const dns = require("dns");
+dns.setServers(["8.8.8.8", "8.8.4.4"]);
+
 const mongoose = require("mongoose");
 const app = require("./app");
 const connectDB = require("./config/db");
@@ -8,31 +12,6 @@ const { logger } = require("./services/logger.service");
 const PORT = process.env.PORT || 5000;
 let server = null;
 let shuttingDown = false;
-
-// Some local setups (e.g. Windows with a stale loopback DNS at 127.0.0.1 from a
-// VPN/proxy) point Node at a DNS server that refuses queries. The OS resolver
-// still works, but the Mongo driver's SRV lookup uses Node's configured servers
-// and fails with `querySrv ECONNREFUSED`. If the configured DNS fails an SRV
-// lookup, fall back to a working public resolver so the backend can boot.
-const patchDnsServer = async () => {
-  const probe = "_mongodb._tcp.cluster0.qye7les.mongodb.net";
-  try {
-    await dns.resolveSrv(probe);
-  } catch (err) {
-    if (err.code !== "ECONNREFUSED") return;
-    const fallbacks = [process.env.DNS_SERVER, "8.8.8.8", "1.1.1.1"].filter(Boolean);
-    for (const server of fallbacks) {
-      try {
-        dns.setServers([server]);
-        await dns.resolveSrv(probe);
-        logger.info({ dnsServer: server }, "patched broken DNS server");
-        return;
-      } catch {
-        /* try next */
-      }
-    }
-  }
-};
 
 // Fail fast at boot if required secrets are missing instead of surfacing
 // confusing runtime errors on first authenticated request / db connect.
@@ -46,10 +25,18 @@ if (!process.env.JWT_SECRET) {
 }
 
 const start = async () => {
-  await patchDnsServer();
   await connectDB();
   server = app.listen(PORT, () => {
     logger.info({ port: PORT }, "server started");
+  });
+
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      logger.fatal({ port: PORT }, `Port ${PORT} is already in use`);
+    } else {
+      logger.fatal({ err: { message: err.message } }, "server socket error");
+    }
+    process.exit(1);
   });
 
   // Harden the HTTP server against slowloris / stalled-connection DoS and keep
@@ -113,7 +100,7 @@ const fatal = (label, err) => {
   server?.close(() => {
     mongoose.disconnect().then(() => process.exit(1)).catch(() => process.exit(1));
   });
-  setTimeout(() => process.exit(1), 5000).unref();
+  setTimeout(() => process.exit(1), 10000).unref();
 };
 
 process.on("unhandledRejection", (err) => fatal("Unhandled rejection", err));

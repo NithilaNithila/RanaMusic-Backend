@@ -5,6 +5,7 @@ const { logger } = require("./logger.service");
 const { getCache, setCache, makeCacheKey } = require("./cache.service");
 const { normalizeTrack, normalizeAlbum, normalizeArtist, normalizePlaylist, getImage } = require("./saavn.mappers");
 const { sanitizePagination } = require("../utils/pagination");
+const { retry } = require("../utils/retry");
 const jiosaavn = require("./jiosaavn.service");
 
 const client = axios.create({
@@ -28,27 +29,34 @@ const saavnGet = async (endpoint, params = {}) => {
   const cached = getCache(cacheKey);
   if (cached) return cached;
 
-  try {
-    const { data } = await client.get(endpoint, { params });
-    setCache(cacheKey, data);
-    return data;
-  } catch (err) {
-    const status = err.response?.status;
-    // A 404 on the lyrics endpoint does NOT mean the lyrics are missing:
-    // the proxy frequently 404s songs that the direct JioSaavn API still
-    // serves lyrics for. Throw so withFallback retries against JioSaavn
-    // (which returns null when there genuinely are none).
-    if (endpoint.includes("/lyrics") && status === 404) {
-      throw new SaavnUnavailableError(status, endpoint);
+  const data = await retry(
+    async () => {
+      try {
+        const { data } = await client.get(endpoint, { params });
+        return data;
+      } catch (err) {
+        const status = err.response?.status;
+        if (endpoint.includes("/lyrics") && status === 404) {
+          throw new SaavnUnavailableError(status, endpoint);
+        }
+        if (status === 429 || status === 500 || status === 503 || !err.response) {
+          logger.warn({ status: status || "unreachable", endpoint }, "Saavn API unavailable, falling back to direct JioSaavn");
+          throw new SaavnUnavailableError(status || 0, endpoint);
+        }
+        throw err;
+      }
+    },
+    {
+      retries: 2,
+      baseMs: 400,
+      shouldRetry: (err) => {
+        if (err instanceof SaavnUnavailableError && err.status === 404) return false;
+        return true;
+      },
     }
-    // Fall back to direct JioSaavn on rate-limit / server errors AND on
-    // network failures (no response: DNS, timeout, connection refused).
-    if (status === 429 || status === 500 || status === 503 || !err.response) {
-      logger.warn({ status: status || "unreachable", endpoint }, "Saavn API unavailable, falling back to direct JioSaavn");
-      throw new SaavnUnavailableError(status || 0, endpoint);
-    }
-    throw err;
-  }
+  );
+  setCache(cacheKey, data);
+  return data;
 };
 
 const withFallback = (proxyFn, directFn) => async (...args) => {
@@ -87,6 +95,20 @@ const searchAlbums = withFallback(
     const { page, limit } = sanitizePagination(opts);
     const data = await saavnGet("/search/albums", { query, page, limit });
     const results = (data.data?.results || []).map(normalizeAlbum);
+    // The Saavn proxy sometimes returns 200 with broken payloads (artists
+    // serialized as PowerShell strings, images as whitespace).  Detect this
+    // by checking whether most results lack images and treat it as a failure
+    // so withFallback retries against the direct JioSaavn API.
+    if (results.length > 0) {
+      const withImage = results.filter((r) => r.image).length;
+      if (withImage === 0) {
+        logger.warn(
+          { query, page, total: results.length },
+          "Proxy returned album results with no images, falling back to direct JioSaavn"
+        );
+        throw new SaavnUnavailableError(0, "broken-album-data");
+      }
+    }
     return { total: data.data?.total || 0, results };
   },
   jiosaavn.searchAlbums
@@ -177,12 +199,13 @@ const getLyrics = withFallback(
 
 // Fuzzy match on title + artist so we can find a song in the Saavn catalog
 // when we only have Jamendo-style metadata (no Saavn song id).
+// Unicode-aware: preserves letters from any script (Hindi, Tamil, etc.)
 const normalizeName = (s) =>
   String(s || "")
     .toLowerCase()
     .replace(/\s*\(.*?\)\s*/g, " ")
     .replace(/\s*-\s*(original|official|full video|lyric|ft\.?)\s*.*/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 

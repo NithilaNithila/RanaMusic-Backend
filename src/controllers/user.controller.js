@@ -94,8 +94,8 @@ const changePassword = asyncHandler(async (req, res) => {
   if (!currentPassword || !newPassword) {
     return ApiResponse.error(res, "currentPassword and newPassword are required", 400);
   }
-  if (String(newPassword).length < 6 || String(newPassword).length > 72) {
-    return ApiResponse.error(res, "New password must be between 6 and 72 characters", 400);
+  if (String(newPassword).length < 8 || String(newPassword).length > 72) {
+    return ApiResponse.error(res, "New password must be between 8 and 72 characters", 400);
   }
 
   const user = await User.findById(req.user._id).select("+password");

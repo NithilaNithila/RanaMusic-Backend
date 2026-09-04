@@ -19,7 +19,7 @@ const run = (fields, overrides, body) => {
 };
 
 test("passes valid input to next()", () => {
-  const res = run(["email", "password"], {}, { email: "a@b.com", password: "123456" });
+  const res = run(["email", "password"], {}, { email: "a@b.com", password: "12345678" });
   assert.strictEqual(res.calledNext, true);
   assert.strictEqual(res.sc, undefined);
 });

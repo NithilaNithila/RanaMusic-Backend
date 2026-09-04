@@ -157,7 +157,7 @@ const resolveTrack = asyncHandler(async (req, res) => {
     }
   }
 
-  return ApiResponse.success(res, null, "No match");
+  return ApiResponse.error(res, "No match found", 404);
 });
 
 module.exports = { searchTracks, getPopularTracks, getTrackById, resolveTrack };

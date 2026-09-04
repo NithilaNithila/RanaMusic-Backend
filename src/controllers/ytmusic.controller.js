@@ -6,7 +6,7 @@ const search = asyncHandler(async (req, res) => {
   const { q, type, limit, offset } = req.query;
   if (!q) return ApiResponse.error(res, "Query param 'q' is required", 400);
   const data = await ytService.search(q, { type, limit, offset });
-  return ApiResponse.success(res, data.results, `Found ${data.total} results`);
+  return ApiResponse.success(res, data.results || [], `Found ${data.total} results`);
 });
 
 const searchSuggestions = asyncHandler(async (req, res) => {
