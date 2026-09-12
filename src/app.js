@@ -104,8 +104,8 @@ app.use(compression({
 }));
 
 // CORS. Supports a single origin or a comma-separated list so multiple
-// frontends (prod + staging) can be allowed without a redeploy. If no origins
-// are configured, reflection is disabled and only same-origin requests pass.
+// frontends (prod + staging) can be allowed without a redeploy.
+// If CLIENT_URL is not set, allows same-origin/non-browser clients only.
 const allowedOrigins = (process.env.CLIENT_URL || "")
   .split(",")
   .map((s) => s.trim())
@@ -118,14 +118,20 @@ if (process.env.NODE_ENV === "production" && allowedOrigins.length === 0) {
   process.exit(1);
 }
 
+// Development: if no CLIENT_URL in non-production, allow local origins commonly used
+const isDevelopment = process.env.NODE_ENV !== "production";
+const devAllowedOrigins = isDevelopment
+  ? ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173", "http://127.0.0.1:3000"]
+  : [];
+
 app.use(
   cors({
     origin(origin, cb) {
       // Allow same-origin / non-browser clients (curl, mobile) that send no
       // Origin header, and any explicitly allow-listed origin.
-      if (!origin || allowedOrigins.includes(origin)) {
-        return cb(null, true);
-      }
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      if (isDevelopment && devAllowedOrigins.includes(origin)) return cb(null, true);
       return cb(null, false);
     },
     credentials: true,
@@ -159,7 +165,26 @@ app.get("/health", (req, res) => {
   });
 });
 
-// API routes
+// Root API route - list available endpoints
+app.get("/api", (req, res) => {
+  res.json({
+    success: true,
+    message: "RanaMusic API",
+    endpoints: {
+      search: "/api/search?q=...",
+      auth: "/api/auth/me (requires auth)",
+      saavn: "/api/saavn/search?q=...",
+      ytmusic: "/api/ytmusic/search?q=...",
+      ytmusic_stream: "/api/ytmusic/songs/:id/stream",
+      playlists: "/api/playlists",
+      albums: "/api/albums",
+      artists: "/api/artists",
+      favorites: "/api/favorites",
+      liked_songs: "/api/liked-songs",
+    },
+  });
+});
+
 app.use("/api", routes);
 
 // 404 handler

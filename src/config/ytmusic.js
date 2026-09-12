@@ -1,9 +1,10 @@
 // In-process YouTube Music integration (yt-dlp based). No external proxy, no
 // API key: yt-dlp resolves the audio stream and the backend pipes it directly.
+// Defaults to enabled unless explicitly disabled.
 module.exports = {
   // Kill switch: YT_ENABLED=false disables every yt-dlp call; the resolver
   // falls back to Saavn-only and /stream responds 503.
-  enabled: process.env.YT_ENABLED !== "false",
+  enabled: process.env.YT_ENABLED !== "false" ? true : false,
 
   // Optional override for the yt-dlp binary (absolute path). When empty the
   // packaged binary shipped by yt-dlp-exec (auto-downloaded on install) is used.
