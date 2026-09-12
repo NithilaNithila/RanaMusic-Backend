@@ -6,52 +6,93 @@
 // the standalone endpoints (/tracks/popular, /albums) and the consolidated
 // /api/discover feed reuse the exact same cached pool (same cache key) — no
 // duplicate upstream calls, identical data.
-const { makeCacheKey, memoize } = require("../services/cache.service");
+const { getCache, setCache, makeCacheKey, memoize, delCache } = require("../services/cache.service");
 const { pick } = require("./dayRotation");
 const { logger } = require("../services/logger.service");
+const mapLimit = require("./mapLimit");
+
+// Fetches a single page, returning { results, page } for ordered merging.
+const fetchPage = async (searchFn, query, page, pageSize) => {
+  try {
+    const data = await searchFn(query, { page, limit: pageSize });
+    return { results: data.results || [], page };
+  } catch (err) {
+    logger.warn(
+      { err: { message: err.message }, query, page },
+      "Pool aggregation page fetch failed, skipping"
+    );
+    return { results: [], page };
+  }
+};
 
 // Walks pages of queries and returns a deduplicated list.  Starts with the
 // day-picked query; if it yields zero results on the first page, the next
 // query from the list is tried (up to all queries) so a bad upstream query
 // never leaves the pool empty.
+//
+// The first two pages are walked sequentially so short / unproductive sources
+// stop immediately without over-fetching (matching the upstream's early-exit
+// semantics). Once a query proves productive (page 0 and 1 are both full), the
+// remaining pages are fetched in bounded parallel batches for a faster build.
 const aggregatePool = async (
   searchFn, // e.g. saavnService.searchTracks / searchAlbums
   queryList, // e.g. TRACK_QUERIES[lang] / ALBUM_QUERIES[lang]
-  { pageSize = 40, maxPages = 15, cap = 500 } = {}
+  { pageSize = 40, maxPages = 15, cap = 500, concurrency = 5 } = {}
 ) => {
   const startIndex = queryList.indexOf(pick(queryList));
   const seen = new Set();
   const aggregated = [];
+  let consecutiveEmpty = 0;
+
+  // Merges one page's results (dedup + cap) and reports whether the walk
+  // should keep going. A short page (< pageSize), 3 consecutive empties, or
+  // reaching the cap all stop the walk.
+  const consume = (results) => {
+    let done = false;
+    consecutiveEmpty = results.length === 0 ? consecutiveEmpty + 1 : 0;
+    if (consecutiveEmpty >= 3) done = true;
+    for (const item of results) {
+      if (!item || !item.id || seen.has(item.id)) continue;
+      seen.add(item.id);
+      aggregated.push(item);
+      if (aggregated.length >= cap) {
+        done = true;
+        break;
+      }
+    }
+    if (results.length < pageSize) done = true;
+    return !done;
+  };
 
   // Try queries starting from the day-picked one, wrapping around the list.
-  for (let qi = 0; qi < queryList.length && aggregated.length < cap; qi++) {
+  for (let qi = 0; qi < queryList.length; qi++) {
     const query = queryList[(startIndex + qi) % queryList.length];
-    let consecutiveEmpty = 0;
+    consecutiveEmpty = 0;
+    let keepGoing = true;
 
-    for (let upPage = 0; upPage < maxPages && aggregated.length < cap; upPage++) {
-      let results = [];
-      try {
-        const data = await searchFn(query, { page: upPage, limit: pageSize });
-        results = data.results || [];
-      } catch (err) {
-        logger.warn(
-          { err: { message: err.message }, query, page: upPage },
-          "Pool aggregation page fetch failed, skipping"
+    // Sequential walk of the first two pages to detect short sources fast.
+    for (let p = 0; p < Math.min(2, maxPages) && keepGoing; p++) {
+      const { results } = await fetchPage(searchFn, query, p, pageSize);
+      keepGoing = consume(results);
+    }
+    if (aggregated.length >= cap) break;
+
+    // Query is productive — fetch the remaining pages in parallel batches.
+    if (keepGoing) {
+      let upPage = 2;
+      while (upPage < maxPages && aggregated.length < cap) {
+        const batch = Math.min(concurrency, maxPages - upPage);
+        const pageIndices = Array.from({ length: batch }, (_, i) => upPage + i);
+        const pageResults = await mapLimit(pageIndices, concurrency, (p) =>
+          fetchPage(searchFn, query, p, pageSize)
         );
-        consecutiveEmpty++;
-        if (consecutiveEmpty >= 3) break;
-        continue;
+        for (const { results } of pageResults.sort((a, b) => a.page - b.page)) {
+          keepGoing = consume(results);
+          if (!keepGoing || aggregated.length >= cap) break;
+        }
+        upPage += batch;
+        if (!keepGoing) break;
       }
-
-      consecutiveEmpty = results.length === 0 ? consecutiveEmpty + 1 : 0;
-
-      for (const item of results) {
-        if (!item || !item.id || seen.has(item.id)) continue;
-        seen.add(item.id);
-        aggregated.push(item);
-        if (aggregated.length >= cap) break;
-      }
-      if (results.length < pageSize) break;
     }
 
     // Got results from this query — no need to try more queries.
@@ -77,9 +118,21 @@ const getPopularPool = async ({
   queryList,
   ttl = 600,
   options,
+  floor = 10,
 }) => {
   const poolKey = makeCacheKey(poolPrefix, { lang });
-  return memoize(`memo:${poolKey}`, ttl, () => aggregatePool(searchFn, queryList, options));
+  const cached = getCache(poolKey);
+  if (cached !== undefined) return cached;
+
+  const pool = await memoize(`memo:${poolKey}`, ttl, () => aggregatePool(searchFn, queryList, options));
+
+  // A healthy pool is cached for the full TTL. A near-empty one (upstream
+  // down/broken at build time) gets a SHORT life and its memo cleared so the
+  // endpoint recovers quickly instead of serving a broken pool for minutes.
+  const healthy = pool.length >= floor;
+  setCache(poolKey, pool, healthy ? ttl : 30);
+  if (!healthy) delCache(`memo:${poolKey}`);
+  return pool;
 };
 
 module.exports = { aggregatePool, getPopularPool };

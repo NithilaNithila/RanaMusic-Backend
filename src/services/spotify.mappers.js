@@ -16,9 +16,10 @@ const mapArtists = (artists) =>
 
 const mapTrack = (track = {}) => {
   if (!track || (!track.id && !track.uri)) return null;
+  const id = track.id || track.uri.split(":").pop();
   const primary = mapArtists(track.artists);
   return {
-    id: track.id || track.uri.split(":").pop(),
+    id,
     name: track.title || track.name || "",
     type: "track",
     source: "spotify",
@@ -27,6 +28,7 @@ const mapTrack = (track = {}) => {
     album_id: track.album?.id || track.album_id || "",
     image: track.thumbnail || track.image || "",
     audio: track.preview_url || "",
+    streamUrl: `/api/spotify/tracks/${id}/stream`,
     duration:
       Math.round((track.duration_ms || 0) / 1000) || parseDuration(track.duration),
     year: (track.release_date || "").toString().slice(0, 4),

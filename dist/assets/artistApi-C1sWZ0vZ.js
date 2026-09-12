@@ -1,1 +1,0 @@
-import{b as t}from"./index-TRmTRRue.js";const e=(s={})=>t.get("/artists",{params:s}),i=(s,a={})=>t.get("/artists/search",{params:{q:s,...a}}),g=s=>t.get(`/artists/${s}`),o=(s,a={})=>t.get(`/artists/${s}/albums`,{params:a});export{g as a,o as b,e as g,i as s};

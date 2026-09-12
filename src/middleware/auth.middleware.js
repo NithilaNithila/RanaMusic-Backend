@@ -26,6 +26,15 @@ const assertClaims = (decoded) => {
 const userCacheKey = (id) => `auth:user:${id}`;
 const USER_CACHE_TTL = 60;
 
+// Legacy tokens (issued before tokenVersion was added) carry no `v` claim; treat
+// that as version 0. As long as the account has not been reset since (still
+// version 0) they keep working; after any password change/reset the stored
+// version moves to 1 and old tokens stop verifying.
+const tokenMatchesVersion = (decoded, user) => {
+  const issuedVersion = decoded.v == null ? 0 : decoded.v;
+  return issuedVersion === (user.tokenVersion || 0);
+};
+
 // Resolves the authenticated user from the Bearer token into req.user when
 // present and valid. Used by routes that are reachable both anonymously (e.g.
 // viewing a public playlist) and by an authenticated owner (viewing their own
@@ -44,18 +53,16 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
     if (!assertClaims(decoded)) return next();
 
     const cacheKey = userCacheKey(decoded.id);
-    const cachedUser = getCache(cacheKey);
-    if (cachedUser) {
-      req.user = cachedUser;
-      return next();
-    }
-
-    const user = await User.findById(decoded.id).select("-password").lean();
+    let user = getCache(cacheKey);
     if (!user) {
-      return next();
+      user = await User.findById(decoded.id).select("-password").lean();
+      if (!user) {
+        return next();
+      }
+      setCache(cacheKey, user, USER_CACHE_TTL);
     }
+    if (!tokenMatchesVersion(decoded, user)) return next();
 
-    setCache(cacheKey, user, USER_CACHE_TTL);
     req.user = user;
     next();
   } catch (err) {
@@ -84,19 +91,21 @@ const protect = asyncHandler(async (req, res, next) => {
 
     // 1. Try fast in-memory cache first (avoids a MongoDB round-trip per request)
     const cacheKey = userCacheKey(decoded.id);
-    const cachedUser = getCache(cacheKey);
-    if (cachedUser) {
-      req.user = cachedUser;
-      return next();
-    }
-
-    // 2. Cache miss -> load from DB
-    const user = await User.findById(decoded.id).select("-password").lean();
+    let user = getCache(cacheKey);
     if (!user) {
-      return ApiResponse.error(res, "Not authorized, user not found", 401);
+      // 2. Cache miss -> load from DB
+      user = await User.findById(decoded.id).select("-password").lean();
+      if (!user) {
+        return ApiResponse.error(res, "Not authorized, user not found", 401);
+      }
+      setCache(cacheKey, user, USER_CACHE_TTL);
     }
 
-    setCache(cacheKey, user, USER_CACHE_TTL);
+    // 3. Reject tokens issued before the last password change / reset.
+    if (!tokenMatchesVersion(decoded, user)) {
+      return ApiResponse.error(res, "Not authorized, token invalid or expired", 401);
+    }
+
     req.user = user;
     next();
   } catch (err) {

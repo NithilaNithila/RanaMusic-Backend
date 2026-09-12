@@ -29,6 +29,12 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    // Bumped whenever the account's password/reset changes so previously-issued
+    // JWTs (which embed the version at issue time) are rejected by middleware.
+    tokenVersion: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );

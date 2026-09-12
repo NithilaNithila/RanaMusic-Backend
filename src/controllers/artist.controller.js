@@ -2,7 +2,6 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/apiResponse");
 const { logger } = require("../services/logger.service");
 const saavnService = require("../services/saavn.service");
-const ytService = require("../services/ytmusic.service");
 const { sanitizeLang } = require("../config/languages");
 const { getArtistPool } = require("../utils/artistPool");
 
@@ -29,10 +28,7 @@ const searchArtists = asyncHandler(async (req, res) => {
 });
 
 const getArtistById = asyncHandler(async (req, res) => {
-  // JioSaavn doesn't serve every artist (and its IDs differ from YouTube
-  // Music channel IDs), so fall back to YT Music when Saavn can't resolve it.
-  let artist = await saavnService.getArtistById(req.params.id);
-  if (!artist) artist = await ytService.getArtistById(req.params.id);
+  const artist = await saavnService.getArtistById(req.params.id);
   if (!artist) return ApiResponse.error(res, "Artist not found", 404);
   return ApiResponse.success(res, artist);
 });

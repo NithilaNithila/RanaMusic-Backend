@@ -10,15 +10,19 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
 const JWT_ISSUER = process.env.JWT_ISSUER || "rana-music";
 const JWT_AUDIENCE = process.env.JWT_AUDIENCE || "rana-music-client";
 
-const generateToken = (userId) => {
+const generateToken = (userId, claims = {}) => {
   // jti (jwt id) makes tokens individually identifiable so a future revocation
   // list or audit trail can reference a specific token, not just a user.
+  // `v` carries the user's tokenVersion at issue time: middleware rejects a
+  // token whose `v` no longer matches the user's current version, which revokes
+  // every outstanding JWT the moment the password changes or resets.
   return jwt.sign(
     {
       id: userId,
       jti: crypto.randomUUID(),
       iss: JWT_ISSUER,
       aud: JWT_AUDIENCE,
+      ...claims,
     },
     process.env.JWT_SECRET,
     {

@@ -1,8 +1,21 @@
 require("dotenv").config();
 
-// Route DNS through Google to fix SRV resolution on networks with broken DNS
+// Route DNS through public resolvers to fix SRV resolution on networks with
+// broken DNS. Override via DNS_SERVERS (comma-separated) or disable entirely
+// with DNS_SERVERS="" to fall back to the OS resolver.
 const dns = require("dns");
-dns.setServers(["8.8.8.8", "8.8.4.4"]);
+const dnsServers = (process.env.DNS_SERVERS || "8.8.8.8,8.8.4.4")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+if (dnsServers.length) {
+  try {
+    dns.setServers(dnsServers);
+  } catch (err) {
+    // Invalid/disabled resolver config must not crash boot — fall back to OS.
+    console.error(`[dns] setServers([${dnsServers.join(",")}]) failed: ${err?.message}`);
+  }
+}
 
 const mongoose = require("mongoose");
 const app = require("./app");
@@ -55,10 +68,18 @@ const start = async () => {
     shuttingDown = true;
     logger.info({ signal }, "shutdown started, closing connections");
 
-    // Stop accepting new connections immediately.
+// Stop accepting new connections immediately.
     server.close(() => {
       logger.info("HTTP server closed");
     });
+
+    // Reap any yt-dlp stream children that a client abandoned mid-play; they
+    // would otherwise keep downloading into the void after the process exits.
+    try {
+      require("./services/ytmusic.service").killAllStreams();
+    } catch (err) {
+      logger.error({ err: { message: err?.message } }, "failed to kill yt-dlp stream children");
+    }
 
     // Force-terminate remaining open keep-alive connections so the process
     // doesn't hang waiting for idle clients.
@@ -113,3 +134,6 @@ start().catch((err) => {
   logger.fatal({ err: { message: err?.message, stack: err?.stack } }, "server failed to start");
   process.exit(1);
 });
+
+
+

@@ -1,15 +1,13 @@
 const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/apiResponse");
 const spotifyService = require("../services/spotify.service");
-const ytmusicService = require("../services/ytmusic.service");
 const amazonService = require("../services/amazon.service");
 const saavnService = require("../services/saavn.service");
-const { getCache, setCache, makeCacheKey, memoize } = require("../services/cache.service");
+const { makeCacheKey, memoize } = require("../services/cache.service");
 const { getDayIndex } = require("../utils/dayRotation");
 
 const SOURCES = [
   { source: "spotify", service: spotifyService },
-  { source: "ytmusic", service: ytmusicService },
   { source: "amazon", service: amazonService },
   { source: "saavn", service: { search: (q, opts) => saavnService.searchPlaylists(q, opts) } },
 ];
@@ -69,16 +67,6 @@ const hasImage = (p) => Boolean(String(p?.image || "").trim());
 const downscaleImage = (url = "") => {
   const s = String(url || "");
   if (!s) return s;
-
-  // YouTube/YTMusic avatars: `yt3.googleusercontent.com/...=s1200` -> `=s500`.
-  if (/yt\d?\.googleusercontent\.com|yt3\.ggpht\.com/i.test(s)) {
-    return s.replace(/=s\d+/i, "=s500");
-  }
-
-  // YouTube video thumbnails `i.ytimg.com/vi/<id>/hq720.jpg` -> `mqdefault.jpg`.
-  if (/i\.ytimg\.com\/vi\//i.test(s)) {
-    return s.replace(/\/(hq720|hqdefault|maxresdefault|sddefault)\.jpg/i, "/mqdefault.jpg");
-  }
 
   // Amazon product images `images/I/<id>.jpg` -> `images/I/<id>._SX500_.jpg`.
   if (/m\.media-amazon\.com\/images\/I\//i.test(s)) {
@@ -141,12 +129,10 @@ const getCatalogPlaylists = asyncHandler(async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 24, 1), CATALOG_CAP);
   const cacheKey = makeCacheKey("catalog:playlists", { day: getDayIndex() });
 
-  const cached = getCache(cacheKey);
-  if (cached) return ApiResponse.success(res, cached.slice(0, limit));
-
-  // Deduplicate concurrent cache-miss requests (thundering-herd protection);
-  // expensive: 18 queries x 4 providers upstream calls.
-  const merged = await memoize(`memo:${cacheKey}`, CATALOG_TTL_SECONDS, async () => {
+  // memoize both caches the result (under cacheKey, TTL) AND deduplicates
+  // concurrent cache-miss requests (thundering-herd protection). The old code
+  // mirrored getCache/setCache here, storing the same payload twice.
+  const merged = await memoize(cacheKey, CATALOG_TTL_SECONDS, async () => {
     const seenIds = new Set();
     const seenNames = new Set();
     const result = [];
@@ -185,7 +171,6 @@ const getCatalogPlaylists = asyncHandler(async (req, res) => {
     return enrichMissingImages(capped);
   });
 
-  setCache(cacheKey, merged, CATALOG_TTL_SECONDS);
   return ApiResponse.success(res, merged.slice(0, limit), `Found ${Math.min(merged.length, limit)} playlists`);
 });
 

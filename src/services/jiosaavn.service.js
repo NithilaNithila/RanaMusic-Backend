@@ -11,7 +11,7 @@ const API_BASE = "https://www.jiosaavn.com/api.php";
 const DECRYPT_KEY = "38346591";
 
 const client = axios.create({
-  timeout: 8000, // Reduced from 15s to 8s for faster failure
+  timeout: 5000,
   httpAgent,
   httpsAgent,
   headers: {
@@ -38,7 +38,7 @@ const jiosaavnGet = async (call, params = {}, { includeCtx = true } = {}) => {
       });
       return res.data;
     },
-    { retries: 2, baseMs: 300 }
+    { retries: 2, baseMs: 300, maxTotalMs: 10000 }
   );
 
   setCache(cacheKey, data);

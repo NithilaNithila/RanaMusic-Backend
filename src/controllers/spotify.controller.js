@@ -4,6 +4,10 @@ const { logger } = require("../services/logger.service");
 const { getCache, setCache, makeCacheKey } = require("../services/cache.service");
 const spotifyService = require("../services/spotify.service");
 const saavnService = require("../services/saavn.service");
+const mapLimit = require("../utils/mapLimit");
+// Full-length audio pipeline shared with the unified search and the Amazon
+// endpoints: Saavn CDN first, YouTube Music stream as the backstop.
+const { enrichPlayable } = require("../services/search.service");
 
 // JioSaavn exposes real artwork + playable audio, which Spotify's open proxy
 // does not (Spotify tracks come back with name/audio preview but no image).
@@ -15,6 +19,23 @@ const SEARCH_CONCURRENCY = 5;
 // enriched output so repeat fetches of the same playlist return instantly
 // without re-running the Saavn matching.
 const ENRICH_TTL = 600;
+
+// Same-track Saavn lookups within one enrichment batch share one upstream call
+// (two "favorite" tracks with identical title/artist would otherwise each fire
+// a separate search). Bounded, short-TTL, in-process memo.
+const enrichMemo = new Map();
+const ENRICH_MEMO_TTL_MS = 300 * 1000;
+const ENRICH_MEMO_MAX = 200;
+
+const memoEnrichFromSaavn = async (track) => {
+  const key = `${normalizeName(track.name)}|${normalizeName(track.artist_name)}`;
+  const hit = enrichMemo.get(key);
+  if (hit && Date.now() - hit.t < ENRICH_MEMO_TTL_MS) return hit.value;
+  const value = await enrichFromSaavn(track);
+  if (enrichMemo.size >= ENRICH_MEMO_MAX) enrichMemo.clear();
+  enrichMemo.set(key, { value, t: Date.now() });
+  return value;
+};
 
 const normalizeName = (s) =>
   String(s || "")
@@ -68,14 +89,10 @@ const enrichFromSaavn = async (track) => {
 const enrichSpotifyTracks = async (songs) => {
   const targets = songs.filter((t) => !t.image).slice(0, SEARCH_CAP);
 
-  const enriched = [];
-  for (let i = 0; i < targets.length; i += SEARCH_CONCURRENCY) {
-    const batch = targets.slice(i, i + SEARCH_CONCURRENCY);
-    const settled = await Promise.all(
-      batch.map((t) => enrichFromSaavn(t).then((r) => ({ orig: t, rich: r })))
-    );
-    for (const { orig, rich } of settled) enriched.push(rich || orig);
-  }
+  const enriched = await mapLimit(targets, SEARCH_CONCURRENCY, async (t) => {
+    const rich = await memoEnrichFromSaavn(t);
+    return rich || t;
+  });
 
   // Preserve the original order for every track, swapping in enriched data.
   const byId = new Map(enriched.map((t) => [String(t.id), t]));
@@ -95,6 +112,16 @@ const getTrackById = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, track);
 });
 
+// Returns a playable, full-length audio URL for a Spotify track. Spotify only
+// provides 30s previews, so the track is auto-matched to a full Saavn CDN
+// copy (see trackResolver). Response includes `is_full_audio` so clients can
+// tell a real stream from a preview fallback.
+const getTrackStream = asyncHandler(async (req, res) => {
+  const stream = await spotifyService.getTrackStream(req.params.id);
+  if (!stream) return ApiResponse.error(res, "Track not found", 404);
+  return ApiResponse.success(res, stream);
+});
+
 const getAlbumById = asyncHandler(async (req, res) => {
   const album = await spotifyService.getAlbumById(req.params.id);
   if (!album) return ApiResponse.error(res, "Album not found", 404);
@@ -104,7 +131,16 @@ const getAlbumById = asyncHandler(async (req, res) => {
 const getAlbumTracks = asyncHandler(async (req, res) => {
   const album = await spotifyService.getAlbumById(req.params.id);
   if (!album) return ApiResponse.error(res, "Album not found", 404);
-  return ApiResponse.success(res, album.songs || []);
+
+  const cacheKey = makeCacheKey("spotify:album:tracks", { id: req.params.id });
+  const cached = getCache(cacheKey);
+  if (cached) return ApiResponse.success(res, cached);
+
+  // Spotify songs ship as 30s previews; replace them with a full-length copy
+  // (Saavn CDN, YouTube Music backstop) so album songs stream end to end.
+  const songs = await enrichPlayable(album.songs || [], "track");
+  setCache(cacheKey, songs, ENRICH_TTL);
+  return ApiResponse.success(res, songs);
 });
 
 const getArtistById = asyncHandler(async (req, res) => {
@@ -146,14 +182,29 @@ const getPlaylistTracks = asyncHandler(async (req, res) => {
   const cached = getCache(cacheKey);
   if (cached) return ApiResponse.success(res, cached);
 
-  const songs = await enrichSpotifyTracks(playlist.songs || []);
+  // Spotify songs ship as 30s previews. The Saavn merge below fills
+  // image + audio for image-less songs; tracks that already carry an image
+  // keep their preview, so a second enrichPlayable pass resolves any
+  // remaining preview/empty audio (Saavn CDN, YouTube Music backstop).
+  const songs = await enrichPlayable(await enrichSpotifyTracks(playlist.songs || []), "track");
   setCache(cacheKey, songs, ENRICH_TTL);
   return ApiResponse.success(res, songs);
+});
+
+const getHealth = asyncHandler(async (req, res) => {
+  const data = await spotifyService.getHealth();
+  return ApiResponse.success(res, data);
+});
+
+const getToken = asyncHandler(async (req, res) => {
+  const data = await spotifyService.getToken();
+  return ApiResponse.success(res, data);
 });
 
 module.exports = {
   search,
   getTrackById,
+  getTrackStream,
   getAlbumById,
   getAlbumTracks,
   getArtistById,
@@ -161,4 +212,6 @@ module.exports = {
   getArtistAlbums,
   getPlaylistById,
   getPlaylistTracks,
+  getHealth,
+  getToken,
 };

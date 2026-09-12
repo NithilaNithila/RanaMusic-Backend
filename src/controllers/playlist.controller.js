@@ -4,6 +4,11 @@ const Playlist = require("../models/Playlist");
 const PlaylistTrack = require("../models/PlaylistTrack");
 const { LANGUAGES } = require("../config/languages");
 const { getCache, setCache, delCache, makeCacheKey, cache } = require("../services/cache.service");
+const {
+  isPreviewAudioUrl,
+  resolvePlayableAudio,
+} = require("../services/trackResolver.service");
+const mapLimit = require("../utils/mapLimit");
 
 const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -16,6 +21,30 @@ const normalizeTracks = (tracks = []) =>
     audio: t.audioUrl,
     duration: t.duration,
   }));
+
+// Upgrades any stored track whose audio is a short preview or missing to a
+// full-length playable copy. Persists the resolution so later reads are
+// instant; unresolvable tracks keep their original audio.
+const ensureFullAudio = async (tracks = []) => {
+  const needsResolution = tracks.filter((t) => isPreviewAudioUrl(t.audioUrl));
+  if (!needsResolution.length) return tracks;
+
+  const resolved = await mapLimit(needsResolution, 5, async (t) => {
+    const { audioUrl, duration } = await resolvePlayableAudio({
+      name: t.name,
+      artist: t.artistName,
+      audioUrl: t.audioUrl,
+      duration: t.duration,
+    });
+    if (audioUrl !== t.audioUrl || duration !== t.duration) {
+      await PlaylistTrack.updateOne({ _id: t._id }, { audioUrl, duration });
+    }
+    return { ...t, audioUrl, duration };
+  });
+
+  const byId = new Map(resolved.map((t) => [String(t._id), t]));
+  return tracks.map((t) => byId.get(String(t._id)) || t);
+};
 
 // Builds the public playlist shape from a Playlist doc and its (already sorted)
 // track docs. `tracks` defaults to [] so callers that don't need the full track
@@ -68,6 +97,12 @@ const getMyPlaylists = asyncHandler(async (req, res) => {
     .lean();
 
   const tracksByPlaylist = await loadTracksForPlaylists(playlists);
+  await Promise.all(
+    playlists.map(async (p) => {
+      const tracks = tracksByPlaylist.get(String(p._id)) || [];
+      tracksByPlaylist.set(String(p._id), await ensureFullAudio(tracks));
+    })
+  );
   const result = playlists.map((p) =>
     mapPlaylist(p, tracksByPlaylist.get(String(p._id)) || [])
   );
@@ -89,8 +124,9 @@ const getPlaylistById = asyncHandler(async (req, res) => {
   const tracks = await PlaylistTrack.find({ playlist: playlist._id })
     .sort({ position: 1 })
     .lean();
+  const enriched = await ensureFullAudio(tracks);
 
-  return ApiResponse.success(res, mapPlaylist(playlist, tracks));
+  return ApiResponse.success(res, mapPlaylist(playlist, enriched));
 });
 
 // GET /api/playlists/public  (cached)
@@ -127,6 +163,12 @@ const getPublicPlaylists = asyncHandler(async (req, res) => {
   ]);
 
   const tracksByPlaylist = await loadTracksForPlaylists(playlists);
+  await Promise.all(
+    playlists.map(async (p) => {
+      const tracks = tracksByPlaylist.get(String(p._id)) || [];
+      tracksByPlaylist.set(String(p._id), await ensureFullAudio(tracks));
+    })
+  );
   const result = playlists.map((p) =>
     mapPlaylist(p, tracksByPlaylist.get(String(p._id)) || [])
   );
@@ -184,6 +226,12 @@ const getAllPlaylists = asyncHandler(async (req, res) => {
   ]);
 
   const tracksByPlaylist = await loadTracksForPlaylists(playlists);
+  await Promise.all(
+    playlists.map(async (p) => {
+      const tracks = tracksByPlaylist.get(String(p._id)) || [];
+      tracksByPlaylist.set(String(p._id), await ensureFullAudio(tracks));
+    })
+  );
   const result = playlists.map((p) =>
     mapPlaylist(p, tracksByPlaylist.get(String(p._id)) || [])
   );
@@ -297,22 +345,40 @@ const addTrackToPlaylist = asyncHandler(async (req, res) => {
     req.body;
   if (!jamendoId) return ApiResponse.error(res, "jamendoId is required", 400);
 
-  const session = await Playlist.startSession();
-  try {
-    const tracked = await session.withTransaction(async () => {
+  // Cheap duplicate check FIRST: don't burn upstream audio-resolution calls
+  // (Saavn/YT lookups) for a track that is already in the playlist. The
+  // transaction below re-checks for race safety.
+  const dup = await PlaylistTrack.findOne({ playlist: playlist._id, jamendoId });
+  if (dup) return ApiResponse.error(res, "Track already in playlist", 409);
+
+  // Upgrade preview / missing audio to a full-length playable copy so
+  // playlist songs play all the way through instead of cutting at ~16s.
+  const playable = await resolvePlayableAudio({
+    name,
+    artist: artistName,
+    audioUrl,
+    duration,
+  });
+
+  const isDupKey = (err) => err && (err.code === 11000 || /E11000/i.test(String(err?.message || "")));
+  const isNoTransactions = (err) => /Transaction numbers are only allowed on a replica set member/i.test(String(err?.message || ""));
+
+  // Shared insert logic: conflict-check + next position + create. Runs inside a
+  // transaction when `session` is set, otherwise as a plain insert (used by the
+  // no-transaction fallback).
+  const createTrack = async (session) => {
+    const run = async () => {
       const existing = await PlaylistTrack.findOne(
         { playlist: playlist._id, jamendoId },
         null,
-        { session }
+        session ? { session } : null
       );
-      if (existing) {
-        return { conflict: true };
-      }
+      if (existing) return { conflict: true };
 
       const lastPosition = await PlaylistTrack.findOne(
         { playlist: playlist._id },
         { position: 1 },
-        { session, sort: { position: -1 } }
+        session ? { session, sort: { position: -1 } } : { sort: { position: -1 } }
       );
       const position = (lastPosition ? lastPosition.position : 0) + 1;
 
@@ -325,41 +391,52 @@ const addTrackToPlaylist = asyncHandler(async (req, res) => {
             name,
             artistName,
             albumImage,
-            audioUrl,
-            duration,
+            audioUrl: playable.audioUrl,
+            duration: playable.duration,
           },
         ],
-        { session }
+        session ? { session } : {}
       );
 
       // Auto-set cover from first track's image if playlist has no cover yet.
       if (!playlist.coverImage && albumImage) {
         playlist.coverImage = albumImage;
-        await playlist.save({ session });
+        await playlist.save(session ? { session } : {});
       }
       return { conflict: false };
-    });
+    };
+    return session ? session.withTransaction(run) : run();
+  };
 
-    if (tracked.conflict) {
-      return ApiResponse.error(res, "Track already in playlist", 409);
+  // Two concurrent adds can pick the same `max(position)+1`, and one insert
+  // dies on the unique { playlist, position } index the moment the other
+  // commits. The index itself is the arbiter — retry the insert so the loser
+  // recomputes the position from the now-committed winner. Conflict checks are
+  // re-run inside each attempt, so a concurrent duplicate surfaces as 409, not
+  // a 500.
+  const session = await Playlist.startSession();
+  let tracked;
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        tracked = await createTrack(session);
+        break;
+      } catch (err) {
+        if (isDupKey(err)) continue;
+        if (isNoTransactions(err)) {
+          tracked = await createTrack(null);
+          break;
+        }
+        throw err;
+      }
     }
-  } catch (err) {
-    if (!/Transaction numbers are only allowed on a replica set member/i.test(err?.message || "")) throw err;
-    // Fallback for stores without transaction support: do the same work
-    // non-atomically (a concurrent duplicate is unlikely at this scale).
-    const already = await PlaylistTrack.findOne({ playlist: playlist._id, jamendoId });
-    if (already) {
-      return ApiResponse.error(res, "Track already in playlist", 409);
-    }
-    const lastPosition = await PlaylistTrack.findOne({ playlist: playlist._id }, { position: 1 }, { sort: { position: -1 } });
-    const position = (lastPosition ? lastPosition.position : 0) + 1;
-    await PlaylistTrack.create({ playlist: playlist._id, jamendoId, position, name, artistName, albumImage, audioUrl, duration });
-    if (!playlist.coverImage && albumImage) {
-      playlist.coverImage = albumImage;
-      await playlist.save();
-    }
+    if (!tracked) throw new Error("addTrackToPlaylist: retry budget exhausted on duplicate position");
   } finally {
     await session.endSession();
+  }
+
+  if (tracked.conflict) {
+    return ApiResponse.error(res, "Track already in playlist", 409);
   }
 
   invalidatePlaylistCaches();

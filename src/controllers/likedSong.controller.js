@@ -69,15 +69,29 @@ const addLikedSong = asyncHandler(async (req, res) => {
     return ApiResponse.success(res, normalizeTrack(existing), "Already liked");
   }
 
-  const liked = await LikedSong.create({
-    user: req.user._id,
-    trackId: String(track.id),
-    name: track.name,
-    artistName: track.artist_name,
-    image: track.image,
-    audioUrl: track.audio,
-    duration: track.duration,
-  });
+  let liked;
+  try {
+    liked = await LikedSong.create({
+      user: req.user._id,
+      trackId: String(track.id),
+      name: track.name,
+      artistName: track.artist_name,
+      image: track.image,
+      audioUrl: track.audio,
+      duration: track.duration,
+    });
+  } catch (err) {
+    // Duplicate-key race on the {user, trackId} index — a concurrent "like"
+    // landed first. Idempotent success, matching the endpoint's contract.
+    if (err && (err.code === 11000 || /E11000/i.test(String(err?.message || "")))) {
+      const existing = await LikedSong.findOne({
+        user: req.user._id,
+        trackId: String(track.id),
+      });
+      if (existing) return ApiResponse.success(res, normalizeTrack(existing), "Already liked");
+    }
+    throw err;
+  }
 
   return ApiResponse.success(res, normalizeTrack(liked), "Liked", 201);
 });

@@ -1,11 +1,8 @@
-// A self-hosted Amazon Music metadata API. When deploying, always set
-// AMAZON_API_BASE to the actual instance; the public default below is a
-// convenience so an unset variable doesn't silently point at localhost in a
-// production environment.
+// Amazon Music provider (catalog + playback). Points at the third-party
+// amazon-music-api.onrender.com deployment by default; the same base serves
+// catalog reads and playback sessions. Override with AMAZON_API_BASE.
 module.exports = {
   baseURL:
     process.env.AMAZON_API_BASE ||
-    (process.env.NODE_ENV === "production"
-      ? "https://amazon-music-api.onrender.com/api"
-      : "http://localhost:3000/api"),
+    "https://amazon-music-api.onrender.com/api",
 };

@@ -71,7 +71,7 @@ const addHistoryEntry = asyncHandler(async (req, res) => {
 
   const KEEP = 100;
   const threshold = await History.find({ user: req.user._id })
-    .sort({ playedAt: -1 })
+    .sort({ playedAt: -1, _id: -1 }) // _id tiebreaker keeps pruning deterministic
     .skip(KEEP - 1)
     .limit(1)
     .select("playedAt")
@@ -107,15 +107,15 @@ const changePassword = asyncHandler(async (req, res) => {
   }
 
   user.password = newPassword;
+  // Bump tokenVersion so every previously-issued JWT is rejected by the auth
+  // middleware — a stolen pre-change token dies immediately, no client logout
+  // required.
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
   await user.save();
 
   // Force the next request to re-authenticate; revoke the cached session so a
   // stolen pre-change token can't keep using cached identity.
   delCache(`auth:user:${req.user._id}`);
-
-  // Issued JWTs remain valid until expiry. To fully invalidate them the client
-  // should re-issue after a password change (token versioning is a future
-  // enhancement). Logging out on the client is recommended.
 
   return ApiResponse.success(res, {}, "Password changed successfully");
 });

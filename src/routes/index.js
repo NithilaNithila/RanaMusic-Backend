@@ -17,5 +17,7 @@ router.use("/spotify", require("./spotify.routes"));
 router.use("/amazon", require("./amazon.routes"));
 router.use("/ytmusic", require("./ytmusic.routes"));
 router.use("/app-version", require("./version.routes"));
+router.use("/catalog", require("./catalog.routes"));
+router.use("/images", require("./imageProxy.routes"));
 
 module.exports = router;

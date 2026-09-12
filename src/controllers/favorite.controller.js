@@ -62,12 +62,27 @@ const addFavorite = asyncHandler(async (req, res) => {
   }).lean();
   if (existing) return ApiResponse.success(res, existing, "Already favorited");
 
-  const favorite = await Favorite.create({
-    user: req.user._id,
-    itemType,
-    jamendoId,
-    meta,
-  });
+  let favorite;
+  try {
+    favorite = await Favorite.create({
+      user: req.user._id,
+      itemType,
+      jamendoId,
+      meta,
+    });
+  } catch (err) {
+    // A duplicate-key race on the {user,itemType,jamendoId} index: another
+    // request just added the same favorite. Treat it as idempotent success.
+    if (err && (err.code === 11000 || /E11000/i.test(String(err?.message || "")))) {
+      const existing = await Favorite.findOne({
+        user: req.user._id,
+        itemType,
+        jamendoId,
+      }).lean();
+      if (existing) return ApiResponse.success(res, existing, "Already favorited");
+    }
+    throw err;
+  }
 
   delCache(makeCacheKey(`favorites:user:${req.user._id}`, { itemType: "all" }));
   delCache(makeCacheKey(`favorites:user:${req.user._id}`, { itemType }));

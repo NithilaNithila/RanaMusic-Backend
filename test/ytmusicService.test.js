@@ -1,123 +1,344 @@
-const { test, afterEach, beforeEach } = require("node:test");
+const { test, beforeEach } = require("node:test");
 const assert = require("node:assert");
-const axiosMock = require("./helpers/mockAxios");
+const { EventEmitter, Readable } = require("node:stream");
 const { cache } = require("../src/services/cache.service");
+const axiosMock = require("./helpers/mockAxios");
 
-let yt;
+const YTDLP_PATH = require.resolve("yt-dlp-exec");
+const SERVICE_PATH = require.resolve("../src/services/ytmusic.service");
+const CONFIG_PATH = require.resolve("../src/config/ytmusic");
+
+let execSpy = null;
+
+// Fake yt-dlp child: EventEmitter with readable stdout/stderr streams and a
+// kill(). Emits 'close' after both streams end, honoring the exit code.
+const makeChild = ({ stdout = "", stderr = "", exitCode = 0 } = {}) => {
+  const child = new EventEmitter();
+  child.stdout = Readable.from([Buffer.from(String(stdout))]);
+  child.stderr = Readable.from([Buffer.from(String(stderr))]);
+  child.killed = false;
+  child.kill = () => {
+    child.killed = true;
+  };
+  let ended = 0;
+  const maybeClose = () => {
+    if (++ended === 2) child.emit("close", exitCode);
+  };
+  child.stdout.on("end", maybeClose);
+  child.stderr.on("end", maybeClose);
+  return child;
+};
+
+const loadService = () => {
+  delete require.cache[SERVICE_PATH];
+  delete require.cache[CONFIG_PATH];
+  return require(SERVICE_PATH);
+};
+
+const stubYtDlp = (execImpl) => {
+  delete require.cache[YTDLP_PATH];
+  execSpy = execImpl;
+  require.cache[YTDLP_PATH] = {
+    id: YTDLP_PATH,
+    filename: YTDLP_PATH,
+    loaded: true,
+    exports: {
+      exec: execImpl,
+      create: () => ({ exec: execImpl }),
+    },
+  };
+};
 
 beforeEach(() => {
   cache.flushAll();
-  axiosMock.reset();
-  axiosMock.install();
-  yt = axiosMock.fresh("../src/services/ytmusic.service");
+  execSpy = null;
 });
 
-afterEach(() => {
-  axiosMock.restore();
-});
-
-test("search queries each type and maps results", async () => {
-  axiosMock.setHandler((path, config) => {
-    assert.strictEqual(path, "/search");
-    assert.strictEqual(config.params.query, "q");
-    const filter = config.params.filter;
-    const item =
-      filter === "albums"
-        ? { browseId: "al1", title: "Album", tracks: [{ videoId: "t1", title: "X" }] }
-        : { videoId: `v_${filter}`, title: "S" };
-    return Promise.resolve({ data: [item] });
+test("is disabled when YT_ENABLED=false and never spawns yt-dlp", async () => {
+  stubYtDlp(() => {
+    throw new Error("should not run");
   });
-  const out = await yt.search("q", { type: "track,album", limit: 5 });
-  assert.strictEqual(out.results.track[0].id, "v_songs");
-  assert.strictEqual(out.results.album[0].id, "al1");
-});
-
-test("search with type all returns all four buckets", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: [] }));
-  const out = await yt.search("q", { type: "all" });
-  for (const t of ["track", "album", "artist", "playlist"]) {
-    assert.ok(Array.isArray(out.results[t]));
+  process.env.YT_ENABLED = "false";
+  try {
+    const service = loadService();
+    assert.strictEqual(service.isEnabled(), false);
+    await assert.rejects(service.getTrackInfo("dQw4w9WgXcQ"), (err) => err.status === 503);
+  } finally {
+    delete process.env.YT_ENABLED;
+    delete require.cache[SERVICE_PATH];
+    delete require.cache[CONFIG_PATH];
   }
 });
 
-test("search maps the artist bucket", async () => {
-  axiosMock.setHandler((path, config) => {
-    assert.strictEqual(config.params.filter, "artists");
-    return Promise.resolve({ data: [{ channelId: "ch1", title: "Some Artist" }] });
+test("getTrackInfo resolves fields and caches per videoId", async () => {
+  let execCount = 0;
+  stubYtDlp((url, flags) => {
+    execCount += 1;
+    assert.match(url, /music\.youtube\.com\/watch\?v=/);
+    assert.strictEqual(flags.dumpSingleJson, true);
+    assert.strictEqual(flags.noPlaylist, true);
+    return makeChild({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        id: "dQw4w9WgXcQ",
+        title: "Test Song",
+        duration: 213,
+        ext: "webm",
+        mime_type: "audio/webm; codecs=\"opus\"",
+        thumbnail: "https://i.ytimg.com/x.jpg",
+      }),
+    });
   });
-  const out = await yt.search("q", { type: "artist", limit: 5 });
-  assert.strictEqual(out.results.artist[0].id, "ch1");
+
+  const service = loadService();
+  const first = await service.getTrackInfo("dQw4w9WgXcQ");
+  const second = await service.getTrackInfo("dQw4w9WgXcQ");
+  assert.strictEqual(first.id, "dQw4w9WgXcQ");
+  assert.strictEqual(first.duration, 213);
+  assert.strictEqual(first.contentType, "audio/webm");
+  assert.strictEqual(first.thumbnail, "https://i.ytimg.com/x.jpg");
+  assert.strictEqual(second.contentType, "audio/webm");
+  assert.strictEqual(execCount, 1); // memoized
 });
 
-test("direct getters re-throw 5xx errors", async () => {
-  axiosMock.fail(500, "boom");
-  await assert.rejects(yt.getTrackById("e-tr"));
-  await assert.rejects(yt.getAlbumById("e-al"));
-  await assert.rejects(yt.getArtistById("e-ar"));
-  await assert.rejects(yt.getArtistTopTracks("e-ar"));
-  await assert.rejects(yt.getArtistAlbums("e-ar"));
-  await assert.rejects(yt.getPlaylistById("e-pl"));
+test("getTrackInfo maps a bot-check stderr to 403", async () => {
+  stubYtDlp(() =>
+    makeChild({
+      exitCode: 1,
+      stderr: "ERROR: Sign in to confirm you're not a bot",
+    })
+  );
+  const service = loadService();
+  await assert.rejects(
+    service.getTrackInfo("dQw4w9WgXcQ"),
+    (err) => err.status === 403 && /bot check/i.test(err.message)
+  );
 });
 
-test("searchSuggestions returns array", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: ["a", "b"] }));
-  assert.deepStrictEqual(await yt.searchSuggestions("abc"), ["a", "b"]);
-  cache.flushAll();
-  axiosMock.setHandler(() => Promise.resolve({ data: null }));
-  assert.deepStrictEqual(await yt.searchSuggestions("def"), []);
+test("getTrackInfo maps unavailable videos to 404", async () => {
+  stubYtDlp(() =>
+    makeChild({
+      exitCode: 1,
+      stderr: "ERROR: [youtube] abc: Video unavailable",
+    })
+  );
+  const service = loadService();
+  await assert.rejects(service.getTrackInfo("dQw4w9WgXcQ"), (err) => err.status === 404);
 });
 
-test("getTrackById normalizes or nulls", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { tracks: [{ videoId: "v1", title: "S" }] } }));
-  assert.strictEqual((await yt.getTrackById("v1")).id, "v1");
-  axiosMock.setHandler(() => Promise.resolve({ data: { tracks: [] } }));
-  assert.strictEqual(await yt.getTrackById("none"), null);
-  axiosMock.fail(404, "nf");
-  assert.strictEqual(await yt.getTrackById("nf"), null);
+test("searchTrack returns the first ytsearch result and caches the query", async () => {
+  let calls = [];
+  stubYtDlp((url, flags) => {
+    calls.push({ url, flags });
+    return makeChild({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        entries: [
+          {
+            id: "YR12Z8f1Dh8",
+            title: "Why This Kolaveri Di - Official Video",
+            duration: 261,
+            thumbnail: "https://i.ytimg.com/k.jpg",
+          },
+        ],
+      }),
+    });
+  });
+  const service = loadService();
+  const hit = await service.searchTrack("why this kolaveri di");
+  const hit2 = await service.searchTrack("why this kolaveri di");
+  assert.strictEqual(hit.videoId, "YR12Z8f1Dh8");
+  assert.ok(hit.name.includes("Kolaveri"));
+  assert.strictEqual(hit.duration, 261);
+  assert.strictEqual(hit.thumbnail, "https://i.ytimg.com/k.jpg");
+  assert.strictEqual(hit2.videoId, "YR12Z8f1Dh8");
+  assert.strictEqual(calls.length, 1); // memoized
+  assert.match(calls[0].url, /^ytsearch1:/);
 });
 
-test("getLyrics returns lyrics or null", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { lyrics: "la" } }));
-  assert.strictEqual(await yt.getLyrics("v1"), "la");
-  axiosMock.setHandler(() => Promise.resolve({ data: { text: "ta" } }));
-  assert.strictEqual(await yt.getLyrics("v2"), "ta");
-  axiosMock.fail(500, "err");
-  assert.strictEqual(await yt.getLyrics("v3"), null);
+test("searchTrack returns null for an empty result set", async () => {
+  stubYtDlp(() => makeChild({ exitCode: 0, stdout: JSON.stringify({ entries: [] }) }));
+  const service = loadService();
+  const hit = await service.searchTrack("nope not found anything");
+  assert.strictEqual(hit, null);
 });
 
-test("getAlbumById normalizes or nulls", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { title: "Album", artists: [{ name: "A" }], tracks: [{ videoId: "t1" }] } }));
-  assert.strictEqual((await yt.getAlbumById("al")).id, "al");
-  axiosMock.fail(400, "nf");
-  assert.strictEqual(await yt.getAlbumById("al2"), null);
+test("search returns normalized track rows from a multi-entry ytsearch", async () => {
+  let calls = [];
+  stubYtDlp((url, flags) => {
+    calls.push({ url, flags });
+    return makeChild({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        entries: [
+          {
+            id: "V1",
+            title: "Song One ",
+            duration: 200,
+            thumbnails: [{ url: "https://i.ytimg.com/t1.jpg" }, { url: "https://i.ytimg.com/t1max.jpg" }],
+            channel: "Artist One",
+          },
+          {
+            id: "V2",
+            title: "Song Two",
+            duration: 180,
+            thumbnail: "https://i.ytimg.com/t2.jpg",
+            uploader: "Artist Two",
+          },
+        ],
+      }),
+    });
+  });
+  const service = loadService();
+  const out = await service.search("query", { type: "track", limit: 5 });
+
+  assert.strictEqual(out.results.track.length, 2);
+  assert.strictEqual(out.results.track[0].id, "V1");
+  assert.strictEqual(out.results.track[0].source, "ytmusic");
+  assert.strictEqual(out.results.track[0].name, "Song One"); // trailing space trimmed
+  assert.strictEqual(out.results.track[0].artist_name, "Artist One");
+  assert.strictEqual(out.results.track[0].audio, "/api/ytmusic/songs/V1/stream");
+  assert.strictEqual(out.results.track[0].image, "https://i.ytimg.com/t1max.jpg");
+  assert.strictEqual(out.results.track[1].artist_name, "Artist Two");
+  assert.strictEqual(out.results.track[1].image, "https://i.ytimg.com/t2.jpg");
+  assert.match(calls[0].url, /^ytsearch5:/);
+  assert.strictEqual(calls[0].flags.noPlaylist, true);
+  // Full format extraction is far too slow for multi-entry searches; flat
+  // playlist mode keeps the dump cheap while still exposing title/duration.
+  assert.strictEqual(calls[0].flags.flatPlaylist, true);
+
+  // Memoized: repeating the query reuses the cached entries.
+  await service.search("query", { type: "track", limit: 5 });
+  assert.strictEqual(calls.length, 1);
 });
 
-test("getArtistById normalizes or nulls", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { channelId: "ch", name: "A" } }));
-  assert.strictEqual((await yt.getArtistById("ch")).id, "ch");
-  axiosMock.fail(404, "nf");
-  assert.strictEqual(await yt.getArtistById("ch2"), null);
+test("search returns non-track rows from the innertube catalog without spawning yt-dlp", async () => {
+  let ytCalls = 0;
+  stubYtDlp(() => {
+    ytCalls += 1;
+    return makeChild({ exitCode: 0, stdout: "{}" });
+  });
+
+  // Non-track types no longer cost nothing: albums/playlists/artists are
+  // searched via the youtubei innertube HTTP API (they have no yt-dlp facet),
+  // so the axios client is mocked to keep the test hermetic.
+  const col = (text) => ({ musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text }] } } });
+  const shelfItem = (row) => ({ itemSectionRenderer: { contents: [{ musicResponsiveListItemRenderer: row }] } });
+  const data = {
+    contents: {
+      tabbedSearchResultsRenderer: {
+        tabs: [{
+          tabRenderer: {
+            content: {
+              sectionListRenderer: {
+                contents: [
+                  shelfItem({
+                    thumbnail: { musicThumbnailRenderer: { thumbnail: { thumbnails: [{ url: "https://i.ytimg.com/a.jpg", width: 544, height: 544 }] } } },
+                    flexColumns: [
+                      col("Q"),
+                      { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: "Album" }, { text: " • " }, { text: "Mr.Children" }, { text: " • " }, { text: "2000" }] } } },
+                      col(""),
+                    ],
+                    navigationEndpoint: { browseEndpoint: { browseId: "MPREb_HcT2jz11xK4" } },
+                  }),
+                  shelfItem({
+                    thumbnail: { musicThumbnailRenderer: { thumbnail: { thumbnails: [{ url: "https://i.ytimg.com/p.jpg", width: 544, height: 544 }] } } },
+                    flexColumns: [
+                      col("Q Playlist"),
+                      { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: "Playlist" }, { text: " • " }, { text: "YouTube Music" }, { text: " • " }, { text: "12 songs" }] } } },
+                      col(""),
+                    ],
+                    navigationEndpoint: { browseEndpoint: { browseId: "VLRDCLAK5uy_kZGV6lZmVZGVo" } },
+                  }),
+                ],
+              },
+            },
+          },
+        }],
+      },
+    },
+  };
+  axiosMock.install();
+  axiosMock.setHandler(() => Promise.resolve({ data }));
+  try {
+    const service = loadService();
+    const out = await service.search("q", { type: "album,playlist", limit: 5 });
+    assert.strictEqual(out.results.album.length, 1);
+    assert.strictEqual(out.results.album[0].id, "MPREb_HcT2jz11xK4");
+    assert.strictEqual(out.results.album[0].name, "Q");
+    assert.strictEqual(out.results.playlist.length, 1);
+    assert.strictEqual(out.results.playlist[0].track_count, 12);
+    assert.strictEqual(out.results.playlist[0].id, "RDCLAK5uy_kZGV6lZmVZGVo");
+    assert.strictEqual(ytCalls, 0);
+  } finally {
+    axiosMock.restore();
+  }
 });
 
-test("getArtistTopTracks maps results", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { songs: { results: [{ videoId: "v1", title: "S" }] } } }));
-  const out = await yt.getArtistTopTracks("ch");
-  assert.strictEqual(out.results[0].id, "v1");
-  axiosMock.fail(404, "nf");
-  assert.deepStrictEqual(await yt.getArtistTopTracks("ch2"), { total: 0, results: [] });
+test("spawnStream returns a child configured for raw audio output", async () => {
+  let captured = null;
+  stubYtDlp((url, flags) => {
+    captured = { url, flags };
+    return makeChild({});
+  });
+  const service = loadService();
+  const child = service.spawnStream("dQw4w9WgXcQ");
+  assert.strictEqual(captured.flags.output, "-");
+  assert.strictEqual(captured.flags.format, "bestaudio[ext=m4a]/bestaudio");
+  assert.match(captured.url, /watch\?v=dQw4w9WgXcQ/);
+  assert.strictEqual(typeof child.stdout.pipe, "function");
 });
 
-test("getArtistAlbums maps results and nulls on 404", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { albums: { results: [{ browseId: "al", title: "A", tracks: [{ videoId: "t1" }] }] } } }));
-  const out = await yt.getArtistAlbums("ch");
-  assert.strictEqual(out.results[0].id, "al");
-  axiosMock.fail(404, "nf");
-  assert.deepStrictEqual(await yt.getArtistAlbums("ch2"), { total: 0, results: [] });
+test("circuit breaker opens after a streak of bot-checks and short-circuits", async () => {
+  let calls = 0;
+  stubYtDlp(() => {
+    calls += 1;
+    return makeChild({ exitCode: 1, stderr: "ERROR: Sign in to confirm you're not a bot" });
+  });
+  const service = loadService();
+  for (let i = 0; i < 5; i++) {
+    await assert.rejects(service.getTrackInfo(`aaaaaaaaaaa${i}`), (err) => err.status === 403);
+  }
+  assert.strictEqual(service.isBreakerOpen(), true);
+  const callsBefore = calls;
+  await assert.rejects(service.getTrackInfo("dQw4w9WgXcQ"), (err) => err.status === 503);
+  assert.strictEqual(calls, callsBefore); // no new spawn while open
 });
 
-test("getPlaylistById normalizes or nulls", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { playlistId: "pl", title: "P" } }));
-  assert.strictEqual((await yt.getPlaylistById("pl")).id, "pl");
-  axiosMock.fail(400, "nf");
-  assert.strictEqual(await yt.getPlaylistById("pl2"), null);
+test("a missing binary maps to 502 without opening the breaker", async () => {
+  stubYtDlp(() => {
+    const err = new Error("spawn yt-dlp ENOENT");
+    err.code = "ENOENT";
+    throw err;
+  });
+  const service = loadService();
+  await assert.rejects(service.getTrackInfo("dQw4w9WgXcQ"), (err) => {
+    assert.strictEqual(err.status, 502);
+    assert.strictEqual(err.binaryMissing, true);
+    return true;
+  });
+  assert.strictEqual(service.isBreakerOpen(), false);
+});
+
+test("spawnStream rejects with 429 when the concurrency cap is hit", async () => {
+  const spawned = [];
+  stubYtDlp((url, flags) => {
+    const child = makeChild({});
+    spawned.push(child);
+    return child;
+  });
+  process.env.YT_MAX_CONCURRENCY = "1";
+  try {
+    const service = loadService();
+    const first = service.spawnStream("dQw4w9WgXcQ");
+    assert.ok(first);
+    assert.throws(() => service.spawnStream("dQw4w9WgXcQ"), (err) => err.status === 429);
+    // Releasing the first child frees a slot again.
+    first.emit("close", 0);
+    assert.ok(service.spawnStream("dQw4w9WgXcQ"));
+  } finally {
+    delete process.env.YT_MAX_CONCURRENCY;
+    delete require.cache[SERVICE_PATH];
+    delete require.cache[CONFIG_PATH];
+  }
 });

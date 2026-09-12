@@ -59,3 +59,28 @@ test("normalizePlaylist maps createdBy and songs", () => {
   assert.strictEqual(out.track_count, 1);
   assert.strictEqual(normalizePlaylist({ name: "no id" }), null);
 });
+
+test("playParams are synthesized so catalog items can seed playback sessions", () => {
+  const track = normalizeTrack({ id: "t1", title: "S", album: { id: "al" } });
+  assert.equal(track.playParams.id, "mrn:1.0:catalog:track:asin:t1");
+  assert.deepEqual(track.playParams.containerIds, ["mrn:1.0:catalog:album:asin:al"]);
+  assert.ok(track.playParams.selections.includes("PLAY"));
+
+  const album = normalizeAlbum({ id: "al1", name: "A" });
+  assert.equal(album.playParams.id, "mrn:1.0:catalog:album:asin:al1");
+
+  const artist = normalizeArtist({ id: "ar", name: "A" });
+  assert.equal(artist.playParams.id, "mrn:1.0:catalog:artist:asin:ar");
+
+  const playlist = normalizePlaylist({ id: "pl", name: "P" });
+  assert.equal(playlist.playParams.id, "mrn:1.0:catalog:playlist:asin:pl");
+});
+
+test("playParams from Amazon win over synthesized ones", () => {
+  const upstream = {
+    id: "t1",
+    title: "S",
+    playParams: { id: "mrn:1.0:catalog:track:asin:REAL", selections: ["PLAY"] },
+  };
+  assert.deepEqual(normalizeTrack(upstream).playParams, upstream.playParams);
+});

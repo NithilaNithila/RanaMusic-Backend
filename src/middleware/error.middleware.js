@@ -10,16 +10,32 @@ const notFound = (req, res, next) => {
 
 // Central error handler - place last
 const errorHandler = (err, req, res, next) => {
+  // Streaming routes may already have sent headers (and possibly bytes) when a
+  // relayed spawn error arrives. We can't send a JSON error at that point —
+  // just drop the connection instead of double-sending and destroying it
+  // mid-error-handling.
+  if (res.headersSent) {
+    if (typeof res.destroy === "function") {
+      try {
+        res.destroy();
+      } catch (_) {
+        // socket already gone
+      }
+    }
+    return;
+  }
+
   // Custom upstream errors (UpstreamError, YtUpstreamError, AmazonError,
   // SaavnUnavailableError) carry .status; use it so 502/429/etc. from
   // providers are surfaced instead of being flattened to a generic 500.
   let statusCode = err.statusCode || err.status || 500;
   let message = err.message || "Server Error";
 
-  // Provider 5xx failures mean the upstream is down/broken, not our own
-  // server error - surface them as 502 so clients can tell the difference
+  // Provider 5xx failures — and 0 (upstream unreachable / broken payloads,
+  // e.g. SaavnUnavailableError) — mean the upstream is down/broken, not our
+  // own server error. Surface them as 502 so clients can tell the difference
   // from a genuine 500 crash.
-  if (err.status && err.status >= 500) {
+  if (err.status !== undefined && (err.status === 0 || err.status >= 500)) {
     statusCode = 502;
     message = "Upstream service error";
   }
@@ -66,9 +82,13 @@ const errorHandler = (err, req, res, next) => {
   // stack trace can leak internal file paths / module layout, so it is only
   // logged in development. The client-facing message/status never changes.
   const log = logger.child({ reqId: req.id || "n/a", status: statusCode, path: req.originalUrl, method: req.method, name: err.name || "Error" });
+  // Upstream detail (kept out of the client response) is still logged here so
+  // the root cause isn't lost in production.
+  const base = { message: err.message, name: err.name || "Error" };
+  if (err.detail) base.detail = err.detail;
   const logged = process.env.NODE_ENV === "development"
-    ? { err: { message: err.message, stack: err.stack } }
-    : { err: { message: err.message, name: err.name || "Error" } };
+    ? { err: { ...base, stack: err.stack } }
+    : { err: base };
   log.error(logged, message);
 
   return ApiResponse.error(

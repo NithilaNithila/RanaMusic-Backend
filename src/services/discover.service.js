@@ -7,14 +7,13 @@
 //   /albums (shared cache keys -> no duplicate upstream calls, identical data).
 // - Artists reuse the "artists on the rise" roster (shared pool per lang).
 // - Playlists are built from a rotating subset of source queries, merged
-//   across three providers and cached per calendar day.
+//   across two providers and cached per calendar day.
 //
 // Every section degrades gracefully: if one upstream fails, that section is
 // simply returned empty instead of failing the whole feed.
 const saavnService = require("./saavn.service");
 const spotifyService = require("./spotify.service");
-const ytmusicService = require("./ytmusic.service");
-const amazonService = require("./amazon.service");
+const amazonWebService = require("./amazonWeb.service");
 const { getCache, setCache, makeCacheKey, memoize } = require("./cache.service");
 const { getDayIndex, pickBlocks } = require("../utils/dayRotation");
 const { getPopularPool } = require("../utils/popularPool");
@@ -101,8 +100,9 @@ const PLAYLIST_QUERIES = [
 
 const PLAYLIST_SOURCES = [
   { source: "spotify", service: spotifyService },
-  { source: "ytmusic", service: ytmusicService },
-  { source: "amazon", service: amazonService },
+  // Amazon playlists come from the unofficial music.amazon.* scraper (real
+  // catalog, no LWA/cookies or login).
+  { source: "amazon", service: amazonWebService },
 ];
 
 const PLAYLIST_BLOCK_SIZE = 4; // how many queries form one day's block
@@ -125,17 +125,22 @@ const tagWith = (items, source) =>
 const buildPlaylists = async (queries) => {
   const seen = new Set();
   const merged = [];
-  const totalBySource = { spotify: 0, ytmusic: 0, amazon: 0 };
+  const totalBySource = { spotify: 0, amazon: 0 };
 
-  for (const { source, service } of PLAYLIST_SOURCES) {
+  // Run all 2 providers in parallel instead of sequentially.
+  const providerResults = await Promise.allSettled(
+    PLAYLIST_SOURCES.map(async ({ source, service }) => {
+      const settled = await Promise.allSettled(
+        queries.map((q) => service.search(q, { type: "playlist", limit: 30 }))
+      );
+      return { source, settled };
+    })
+  );
+
+  for (const result of providerResults) {
+    if (result.status !== "fulfilled") continue;
+    const { source, settled } = result.value;
     if (merged.length >= PLAYLIST_CAP) break;
-
-    const settled = await Promise.allSettled(
-      queries.map((q) =>
-        service.search(q, { type: "playlist", limit: 30 })
-      )
-    );
-
     for (const attempt of settled) {
       if (attempt.status !== "fulfilled") continue;
       const playlists = tagWith(attempt.value.results?.playlist, source);
@@ -150,6 +155,7 @@ const buildPlaylists = async (queries) => {
           break;
         }
       }
+      if (merged.length >= PLAYLIST_CAP || totalBySource[source] >= PLAYLIST_PER_SOURCE) break;
     }
   }
 

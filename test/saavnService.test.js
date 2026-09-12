@@ -52,6 +52,17 @@ test("searchTracks falls back to JioSaavn on 429 upstream", async () => {
   assert.strictEqual(out.results[0].id, "j1");
 });
 
+test("searchTracks falls back to JioSaavn on any 5xx upstream", async () => {
+  let calls = 0;
+  axiosMock.setHandler(() => {
+    calls += 1;
+    if (calls <= 3) return Promise.reject(Object.assign(new Error("gw"), { isAxiosError: true, response: { status: 502 } }));
+    return Promise.resolve({ data: { results: [{ id: "j2", song: "J2", primary_artists: "A", album: "Al" }] } });
+  });
+  const out = await saavn.searchTracks("q", {});
+  assert.strictEqual(out.results[0].id, "j2");
+});
+
 test("searchAlbums maps results", async () => {
   axiosMock.setHandler(() => Promise.resolve({ data: { data: { results: [{ id: "al", name: "A", artists: { primary: [] }, image: [{ quality: "500x500", url: "http://img" }] }], total: 1 } } }));
   const out = await saavn.searchAlbums("q", {});
@@ -74,6 +85,94 @@ test("getTrackById normalizes the first song", async () => {
   axiosMock.setHandler(() => Promise.resolve({ data: { data: [songData.results[0]] } }));
   const out = await saavn.getTrackById("t1");
   assert.strictEqual(out.id, "t1");
+});
+
+test("getTracks maps multiple tracks from a single ids call", async () => {
+  axiosMock.setHandler((path, config) => {
+    assert.match(path, /\/songs$/);
+    assert.strictEqual(config.params.ids, "t1,t2");
+    return Promise.resolve({ data: { data: [songData.results[0], { ...songData.results[0], id: "t2" }] } });
+  });
+  const out = await saavn.getTracks("t1,t2");
+  assert.strictEqual(out.total, 2);
+  assert.deepStrictEqual(out.results.map((r) => r.id), ["t1", "t2"]);
+});
+
+test("getTracks returns empty for no ids", async () => {
+  const out = await saavn.getTracks("");
+  assert.deepStrictEqual(out, { total: 0, results: [] });
+});
+
+test("getTracks recovers via per-id getTrackById when the collection call fails", async () => {
+  let calls = 0;
+  axiosMock.setHandler(() => {
+    calls += 1;
+    if (calls <= 3) return Promise.reject(Object.assign(new Error("rl"), { isAxiosError: true, response: { status: 429 } }));
+    return Promise.resolve({ data: { data: [songData.results[0]] } });
+  });
+  const out = await saavn.getTracks("t1");
+  assert.strictEqual(out.total, 1);
+  assert.strictEqual(out.results[0].id, "t1");
+});
+
+test("getTrackSuggestions maps suggestion tracks", async () => {
+  axiosMock.setHandler((path) => {
+    assert.match(path, /\/songs\/t1\/suggestions$/);
+    return Promise.resolve({ data: { data: [songData.results[0], { ...songData.results[0], id: "t2" }] } });
+  });
+  const out = await saavn.getTrackSuggestions("t1");
+  assert.strictEqual(out.total, 2);
+  assert.strictEqual(out.results[0].id, "t1");
+});
+
+test("getAlbums fetches each album by id", async () => {
+  axiosMock.setHandler((path, config) => {
+    assert.match(path, /\/albums$/);
+    return Promise.resolve({ data: { data: { id: config.params.id, name: "Album", artists: { primary: [] }, image: [] } } });
+  });
+  const out = await saavn.getAlbums("al1,al2");
+  assert.strictEqual(out.total, 2);
+  assert.deepStrictEqual(out.results.map((r) => r.id).sort(), ["al1", "al2"]);
+});
+
+test("getArtists fetches each artist by id", async () => {
+  axiosMock.setHandler((path, config) => {
+    assert.match(path, /\/artists$/);
+    return Promise.resolve({ data: { data: { id: config.params.id, name: "A", image: [] } } });
+  });
+  const out = await saavn.getArtists("ar1,ar2");
+  assert.strictEqual(out.total, 2);
+  assert.deepStrictEqual(out.results.map((r) => r.id).sort(), ["ar1", "ar2"]);
+});
+
+test("getPlaylistById normalizes playlist detail including songs", async () => {
+  axiosMock.setHandler((path, config) => {
+    assert.match(path, /\/playlists$/);
+    assert.strictEqual(config.params.id, "p1");
+    return Promise.resolve({ data: { data: { id: "p1", name: "P", image: [], songCount: 3, songs: [songData.results[0]] } } });
+  });
+  const out = await saavn.getPlaylistById("p1");
+  assert.strictEqual(out.id, "p1");
+  assert.strictEqual(out.track_count, 3);
+  assert.strictEqual(out.songs.length, 1);
+});
+
+test("getPlaylistById resolves null for invalid entity", async () => {
+  axiosMock.setHandler(() => Promise.resolve({ data: { data: { id: "", name: "" } } }));
+  const out = await saavn.getPlaylistById("bad");
+  assert.strictEqual(out, null);
+});
+
+test("getPlaylists skips invalid playlists", async () => {
+  let call = 0;
+  axiosMock.setHandler((path, config) => {
+    call += 1;
+    if (call === 1) return Promise.resolve({ data: { data: { id: config.params.id, name: "P", image: [] } } });
+    return Promise.resolve({ data: { data: { id: "", name: "" } } });
+  });
+  const out = await saavn.getPlaylists("p1,bad");
+  assert.strictEqual(out.total, 1);
+  assert.strictEqual(out.results[0].id, "p1");
 });
 
 test("getTrackById resolves null for invalid entity", async () => {

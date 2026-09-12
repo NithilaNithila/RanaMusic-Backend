@@ -28,13 +28,20 @@ const getTransporter = () => {
   return transporter;
 };
 
-const sendMail = async ({ to, subject, html }) => {
+const sendMail = async ({ to, subject, html, tokenPreview }) => {
   const transport = getTransporter();
   const from = process.env.SMTP_FROM || "RanaMusic <noreply@ranamusic.app>";
 
   if (!transport) {
-    logger.info({ to, subject }, "EMAIL (console — SMTP not configured)");
-    logger.info({ resetUrl: html }, "Password reset link");
+    if (process.env.NODE_ENV === "production") {
+      // Never "deliver" by writing a one-time reset token to stdout/logs where
+      // it could be read by anyone watching the process. Fail the send instead
+      // so the operator notices SMTP is misconfigured.
+      throw new Error("SMTP is not configured — cannot deliver emails in production");
+    }
+    // Dev console fallback: log only a MASKED preview (first 8 chars) — never
+    // the full token or the reset URL.
+    logger.info({ to, subject, tokenPreview }, "EMAIL (console — SMTP not configured)");
     return { accepted: [to], message: "Logged to console (SMTP not configured)" };
   }
 
@@ -61,6 +68,7 @@ const sendPasswordResetEmail = async ({ to, resetToken, expiresIn }) => {
     to,
     subject: "RanaMusic — Reset Your Password",
     html,
+    tokenPreview: resetToken.slice(0, 8),
   });
 };
 

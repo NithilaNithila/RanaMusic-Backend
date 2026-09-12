@@ -20,15 +20,20 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: CLIENT_URL
-        value: https://your-frontend-domain.com
+        # Set this in the Render dashboard to your live frontend origin
+        # (e.g. https://your-app.netlify.app). Without it, browsers are
+        # blocked by CORS and search/play will fail in production.
+        sync: false
       - key: SAAVN_API_BASE
         value: https://jiosavanwave.vercel.app/api
       - key: SPOTIFY_API_BASE
-        value: https://spotify-music-api.onrender.com/api
-      - key: YT_API_BASE
-        value: https://youtube-music-api-c2p9.onrender.com
+        value: https://spotify.xwolf.space/api
       - key: AMAZON_API_BASE
         value: https://amazon-music-api.onrender.com/api
+      # YouTube Music gap-fill streaming (in-process yt-dlp). The yt-dlp binary
+      # is downloaded during `npm ci`; override with YTDLP_BINARY to pin a build.
+      - key: YT_ENABLED
+        value: "true"
       - key: MIN_APP_VERSION
         value: "1.0.0"
       - key: LATEST_APP_VERSION

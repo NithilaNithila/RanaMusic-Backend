@@ -1,21 +1,25 @@
 const express = require("express");
 const router = express.Router();
+const asyncHandler = require("../utils/asyncHandler");
 const yt = require("../controllers/ytmusic.controller");
 
-router.get("/search", yt.search);
-router.get("/search/suggestions", yt.searchSuggestions);
+// Multi-type search over the youtubei catalog (track/album/artist/playlist).
+const search = require("../controllers/ytmusic.controller").search;
+router.get("/search", asyncHandler(search));
 
-router.get("/songs/:id", yt.getTrackById);
-router.get("/songs/:id/lyrics", yt.getLyrics);
+// In-process yt-dlp audio stream for a YouTube Music videoId. Public (the
+// client plays audio via an <audio> tag that can't attach Bearer headers), so
+// it is guarded by the global rate limiter + a stricter per-IP stream limiter
+// and a hard concurrency cap on spawned yt-dlp processes.
+router.get("/songs/:id/stream", asyncHandler(yt.stream));
 
-router.get("/albums/:id", yt.getAlbumById);
-router.get("/albums/:id/tracks", yt.getAlbumTracks);
-
-router.get("/artists/:id", yt.getArtistById);
-router.get("/artists/:id/top-tracks", yt.getArtistTopTracks);
-router.get("/artists/:id/albums", yt.getArtistAlbums);
-
-router.get("/playlists/:id", yt.getPlaylistById);
-router.get("/playlists/:id/tracks", yt.getPlaylistTracks);
+// Catalog detail from the youtubei browse endpoint (playlist = bare list id,
+// album = MPREb_ browseId). Used by the search result cards when a catalog row
+// is clicked; /tracks returns the playable song list, each song streaming
+// through /songs/:id/stream above.
+router.get("/playlists/:id", asyncHandler(yt.playlist));
+router.get("/playlists/:id/tracks", asyncHandler(yt.playlistTracks));
+router.get("/albums/:id", asyncHandler(yt.album));
+router.get("/albums/:id/tracks", asyncHandler(yt.albumTracks));
 
 module.exports = router;

@@ -93,6 +93,30 @@ test("wxfGet swallows upstream failures within search (allSettled)", async () =>
   assert.strictEqual(out.total, 0);
 });
 
+test("getHealth returns the upstream health payload", async () => {
+  axiosMock.setHandler((path) => {
+    assert.strictEqual(path, "/health");
+    return Promise.resolve({ data: { status: "ok", uptime_seconds: 100 } });
+  });
+  const out = await spotify.getHealth();
+  assert.strictEqual(out.status, "ok");
+});
+
+test("getToken returns the live bearer token payload", async () => {
+  axiosMock.setHandler((path) => {
+    assert.strictEqual(path, "/token");
+    return Promise.resolve({ data: { access_token: "BQ...", token_type: "Bearer" } });
+  });
+  const out = await spotify.getToken();
+  assert.strictEqual(out.access_token, "BQ...");
+  assert.strictEqual(out.token_type, "Bearer");
+});
+
+test("getToken surfaces a failed token response as an upstream error", async () => {
+  axiosMock.setHandler(() => Promise.resolve({ data: { success: false, error: "nope" } }));
+  await assert.rejects(spotify.getToken(), (err) => err.status === 502);
+});
+
 test("wxfGet unwraps a failed non-response into an upstream error on direct getters", async () => {
   axiosMock.setHandler(() => {
     const err = new Error("gone");

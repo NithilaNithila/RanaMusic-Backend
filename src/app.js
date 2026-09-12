@@ -5,17 +5,27 @@ const helmet = require("helmet");
 const mongoose = require("mongoose");
 
 const routes = require("./routes/index");
-const { apiLimiter } = require("./middleware/rateLimiter.middleware");
+const { apiLimiter, ytStreamLimiter, spotifyTokenLimiter } = require("./middleware/rateLimiter.middleware");
 const { notFound, errorHandler } = require("./middleware/error.middleware");
-const { requestLogger } = require("./middleware/requestLogger.middleware");
+const { requestLogger, redactUrl } = require("./middleware/requestLogger.middleware");
 const { logger } = require("./services/logger.service");
 
 const app = express();
 
-// Trust the first proxy hop so req.ip reflects real clients instead of the
-// load balancer. Required for rate limiting to work correctly behind
-// Render/Koyeb/Vercel-style proxies (otherwise all users share one IP bucket).
-app.set("trust proxy", 1);
+// Trust the proxy hop count for the ACTUAL deployment topology so req.ip
+// reflects real clients instead of the load balancer/router (rate limiting
+// keys on req.ip). Default 1 hop (Render/Koyeb/Vercel put exactly one proxy in
+// front); override with TRUST_PROXY (number of hops, "false"/"0" to disable)
+// if the topology differs — the default is deliberately conservative and
+// pinned rather than trusting everything.
+let trustProxyValue = 1;
+const trustProxyEnv = (process.env.TRUST_PROXY || "").trim();
+if (trustProxyEnv === "false" || trustProxyEnv === "0") trustProxyValue = false;
+else if (trustProxyEnv) {
+  const n = Number(trustProxyEnv);
+  trustProxyValue = Number.isNaN(n) ? trustProxyEnv : n;
+}
+app.set("trust proxy", trustProxyValue);
 app.set("etag", "weak"); // enable ETags for conditional GETs (304 responses)
 
 // X-Response-Time header is injected just before the response headers are
@@ -30,16 +40,17 @@ app.use((req, res, next) => {
   const start = process.hrtime.bigint();
   const writeHead = res.writeHead.bind(res);
   res.writeHead = (...args) => {
-    if (!res.headersSent) {
-      const ms = Number(process.hrtime.bigint() - start) / 1e6;
-      res.setHeader("X-Response-Time", `${ms.toFixed(1)}ms`);
-    }
+    // Second writeHead call (e.g. after err.headersSent handling in a
+    // streaming route) would throw ERR_HTTP_HEADERS_SENT — make it a no-op.
+    if (res.headersSent) return res;
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    res.setHeader("X-Response-Time", `${ms.toFixed(1)}ms`);
     return writeHead(...args);
   };
   res.on("finish", () => {
     const ms = Number(process.hrtime.bigint() - start) / 1e6;
     if (ms > 500) {
-      logger.warn({ reqId: req.id, method: req.method, url: req.originalUrl, durationMs: Math.round(ms) }, "slow request");
+      logger.warn({ reqId: req.id, method: req.method, url: redactUrl(req.originalUrl), durationMs: Math.round(ms) }, "slow request");
     }
   });
   next();
@@ -59,7 +70,7 @@ app.use(helmet({
       connectSrc: ["'self'"],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
-      mediaSrc: ["'self'"],
+      mediaSrc: ["'self'", "https:"],
       frameSrc: ["'none'"],
     },
   },
@@ -82,8 +93,15 @@ app.use(helmet({
   permittedCrossDomainPolicies: { permittedPolicies: "none" },
 }));
 
-// Compression - compress responses > 1KB
-app.use(compression({ threshold: 1024 }));
+// Compression - compress responses > 1KB, skip already-compressed and audio
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    const type = res.getHeader("content-type") || "";
+    if (/^audio\//.test(type)) return false;
+    return compression.filter(req, res);
+  },
+}));
 
 // CORS. Supports a single origin or a comma-separated list so multiple
 // frontends (prod + staging) can be allowed without a redeploy. If no origins
@@ -122,8 +140,14 @@ app.use(express.json({ limit: "10kb" }));
 // attack surface. JSON is the only body format the API documents.
 app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 
-// Rate limiting
+// Rate limiting. The global limiter applies to every /api request (streaming
+// included — express-rate-limit counts once at request start, so long audio
+// responses are safe). /ytmusic additionally gets a tighter limiter because
+// every hit spawns a yt-dlp subprocess; a per-instance concurrency cap inside
+// ytmusic.service bounds spawned processes regardless of limiter state.
 app.use("/api", apiLimiter);
+app.use("/api/ytmusic", ytStreamLimiter);
+app.use("/api/spotify/token", spotifyTokenLimiter);
 
 // Health check
 app.get("/health", (req, res) => {

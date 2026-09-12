@@ -60,6 +60,7 @@ const normalizePlaylist = (playlist) => ({
   language: playlist.language || "",
   url: playlist.url || "",
   track_count: playlist.songCount || playlist.totalSongs || 0,
+  songs: Array.isArray(playlist.songs) ? playlist.songs.map(normalizeTrack) : [],
 });
 
 const normalizeAlbum = (album) => ({

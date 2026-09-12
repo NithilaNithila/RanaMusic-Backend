@@ -23,10 +23,6 @@ afterEach(() => {
 // Routes each provider's network call to the shape each service expects.
 const happyHandler = () => (path, config) => {
   const params = config && config.params ? config.params : {};
-  // ytmusic playlist search -> /search with filter=playlists, data is an array
-  if (params.filter) {
-    return Promise.resolve({ data: [{ id: `yt_${params.filter}`, title: "YT Top" }] });
-  }
   // spotify playlist search -> /search with type=playlist, data.results array
   if (params.type) {
     return Promise.resolve({ data: { results: [{ id: `sp_${params.type}`, name: "Spotify List" }] } });

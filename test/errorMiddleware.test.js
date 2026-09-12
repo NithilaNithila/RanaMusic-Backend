@@ -122,3 +122,21 @@ test("errorHandler maps err.status >= 500 to 502 upstream error", () => {
   assert.strictEqual(res.sc, 502);
   assert.strictEqual(res.js.message, "Upstream service error");
 });
+
+test("errorHandler maps status 0 (upstream unreachable) to 502, not 500", () => {
+  process.env.NODE_ENV = "test";
+  const { req, res } = mk();
+  const err = new Error("unreachable");
+  err.name = "SaavnUnavailableError";
+  err.status = 0;
+  errorHandler(err, req, res, () => {});
+  assert.strictEqual(res.sc, 502);
+  assert.strictEqual(res.js.message, "Upstream service error");
+});
+
+test("errorHandler keeps generic errors at 500", () => {
+  process.env.NODE_ENV = "test";
+  const { req, res } = mk();
+  errorHandler(new Error("boom"), req, res, () => {});
+  assert.strictEqual(res.sc, 500);
+});

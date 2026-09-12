@@ -3,11 +3,11 @@ const ApiResponse = require("../utils/apiResponse");
 const { logger } = require("../services/logger.service");
 const saavnService = require("../services/saavn.service");
 const spotifyService = require("../services/spotify.service");
-const ytmusicService = require("../services/ytmusic.service");
 const amazonService = require("../services/amazon.service");
 const { sanitizeLang, isLangValue, isInLanguage, TRACK_QUERIES } = require("../config/languages");
-const { getCache, setCache, makeCacheKey } = require("../services/cache.service");
+const { getCache, setCache, makeCacheKey, memoize } = require("../services/cache.service");
 const { getPopularPool } = require("../utils/popularPool");
+const { findFullTrack, resolvePlayableAudio, withTimeout } = require("../services/trackResolver.service");
 
 // Upstream Saavn search tops out around 40 results per request, so popular
 // tracks are aggregated across pages until the requested amount is reached
@@ -75,81 +75,61 @@ const getTrackById = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, track);
 });
 
-const normalize = (s) =>
-  String(s || "")
-    .toLowerCase()
-    // Drop parenthetical / bracketed suffixes ("Jaane Kyu (From Tu...)")
-    .replace(/\s*\([^)]*\)\s*/g, " ")
-    .replace(/\s*\[[^\]]*\]\s*/g, " ")
-    .replace(/[^\w\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-// Finds a full, playable (Saavn) version of a track that only exists as a
-// 30s Spotify preview or with no audio at all (YouTube / Amazon). Uses a
-// name + artist match scored against the Saavn search results.
+// Finds a full, playable (Saavn) version of a track that only exists as a 30s
+// Spotify preview or with no audio at all (Amazon). Falls back to the
+// provider's own artwork so the row still shows a real cover.
+const RESOLVE_TTL = 300;
+// Misses stay cheap (a Saavn search chain may take many seconds), but short
+// enough that a track which becomes resolvable later is retried promptly.
+const RESOLVE_MISS_TTL = 60;
 const resolveTrack = asyncHandler(async (req, res) => {
   const { name, artist, source, id } = req.query;
   if (!name) return ApiResponse.error(res, "Query param 'name' is required", 400);
 
-  const query = [name, artist].filter(Boolean).join(" ").trim().slice(0, 120);
-  const data = await saavnService.searchTracks(query, { page: 1, limit: 20 });
-  const results = data.results || [];
-
-  const qName = normalize(name);
-  const qArtists = String(artist || "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-
-  let best = null;
-  let bestScore = 0;
-
-  for (const t of results) {
-    if (!t || !t.audio) continue;
-    const tName = normalize(t.name);
-    const tArtists = String(t.artist_name || "")
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-
-    let score = 0;
-    if (tName === qName) score += 40;
-    else if (tName.includes(qName) || qName.includes(tName)) score += 20;
-
-    if (qArtists.length && tArtists.length) {
-      const hits = qArtists.filter((a) =>
-        tArtists.some((ta) => ta.includes(a) || a.includes(ta))
-      ).length;
-      score += Math.min(hits, 3) * 10;
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = t;
-    }
+  const cacheKey = makeCacheKey("resolve", { name, artist, source, id });
+  const cached = getCache(cacheKey);
+  if (cached) {
+    if (cached.notFound) return ApiResponse.error(res, "No match found", 404);
+    return ApiResponse.success(res, cached);
   }
 
-  if (bestScore >= 20) {
-    return ApiResponse.success(res, best, "Resolved playable track");
+  const resolved = await resolvePlayableAudio({
+    name,
+    artist: artist || "",
+    audioUrl: "",
+    duration: 0,
+    source: source || "",
+    id: id || "",
+  });
+
+  if (resolved && resolved.audioUrl) {
+    const payload = { audio: resolved.audioUrl, duration: resolved.duration || 0, image: resolved.image || "" };
+    setCache(cacheKey, payload, RESOLVE_TTL);
+    return ApiResponse.success(res, payload, "Resolved playable track");
   }
 
-  // No full Saavn copy — the track only plays as a 30s preview / nothing.
-  // If the caller told us which provider it came from, return that
-  // provider's own artwork (image only, never fabricate full audio) so the
-  // row still shows a real cover.
+  // No full copy — return the provider's own artwork so the row still
+  // shows a real cover.
   if (source && id) {
     const getters = {
       spotify: (trackId) => spotifyService.getTrackById(trackId),
-      ytmusic: (trackId) => ytmusicService.getTrackById(trackId),
       amazon: (trackId) => amazonService.getTrackById(trackId),
     };
     const getter = getters[String(source).toLowerCase()];
     if (getter) {
       try {
-        const providerTrack = await getter(id);
+        // Artwork is a nice-to-have, never worth 30s+ of provider retries —
+        // bound it so a miss returns fast instead of adding a second slow tail.
+        const providerTrack = await withTimeout(getter(id), 5000);
         if (providerTrack && providerTrack.image) {
-          return ApiResponse.success(res, { image: providerTrack.image }, "Resolved provider artwork");
+          const payload = { image: providerTrack.image };
+          if (String(source).toLowerCase() === "amazon") {
+            // No free (non-DRM) copy is available anywhere the resolver knows.
+            // Signal the client to fall back to a playback session instead.
+            payload.needsAmazonSession = true;
+          }
+          setCache(cacheKey, payload, RESOLVE_TTL);
+          return ApiResponse.success(res, payload, "Resolved provider artwork");
         }
       } catch (err) {
         logger.warn({ err: { message: err.message }, source, id }, "resolveTrack artwork fetch failed");
@@ -157,6 +137,9 @@ const resolveTrack = asyncHandler(async (req, res) => {
     }
   }
 
+  // No playable copy and no artwork — remember the miss so repeated requests
+  // for the same unresolvable track don't replay the whole slow search chain.
+  setCache(cacheKey, { notFound: true }, RESOLVE_MISS_TTL);
   return ApiResponse.error(res, "No match found", 404);
 });
 

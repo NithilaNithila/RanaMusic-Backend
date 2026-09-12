@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://ranamusic.netlify.app/sitemap.xml

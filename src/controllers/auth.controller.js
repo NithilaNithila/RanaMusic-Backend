@@ -32,7 +32,7 @@ const register = asyncHandler(async (req, res) => {
   }
 
   const user = await User.create({ username, email, password });
-  const token = generateToken(user._id);
+  const token = generateToken(user._id, { v: user.tokenVersion || 0 });
 
   return ApiResponse.success(
     res,
@@ -55,8 +55,10 @@ const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
   const normalizedEmail = String(email || "").toLowerCase().trim();
 
-  // Check if the account is temporarily locked due to brute-force attempts.
-  const lockRemaining = getLockRemaining(normalizedEmail);
+  // Check if this (email, IP) bucket is temporarily locked due to brute-force
+  // attempts. Bucketing by IP means an attacker can't lock a victim's account
+  // from a foreign address — only their own IP gets throttled.
+  const lockRemaining = getLockRemaining(normalizedEmail, req.ip);
   if (lockRemaining) {
     return ApiResponse.error(
       res,
@@ -67,20 +69,20 @@ const login = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ email: normalizedEmail }).select("+password");
   if (!user) {
-    recordFailure(normalizedEmail);
+    recordFailure(normalizedEmail, req.ip);
     return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
   const isMatch = await user.comparePassword(password);
   if (!isMatch) {
-    recordFailure(normalizedEmail);
+    recordFailure(normalizedEmail, req.ip);
     return ApiResponse.error(res, "Invalid email or password", 401);
   }
 
-  // Successful login — clear any failed attempt counter.
+  // Successful login — clear any failed attempt counter for this account.
   clearFailures(normalizedEmail);
 
-  const token = generateToken(user._id);
+  const token = generateToken(user._id, { v: user.tokenVersion || 0 });
 
   return ApiResponse.success(res, {
     user: {
@@ -206,6 +208,9 @@ const resetPassword = asyncHandler(async (req, res) => {
   if (!user) return ApiResponse.error(res, "User not found", 404);
 
   user.password = newPassword;
+  // Invalidate every outstanding session token: bump the tokenVersion so
+  // middleware rejects all previously-issued JWTs.
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
   await user.save();
   delCache(userCacheKey(user._id));
 

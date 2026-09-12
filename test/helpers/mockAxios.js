@@ -16,7 +16,13 @@ const mockGet = (path, config) => {
 const mockCreate = (options) => {
   lastClientOptions = options;
   createdCount += 1;
-  return { get: mockGet };
+  return {
+    get: mockGet,
+    post: (path, body, config) => mockGet(path, { ...(config || {}), data: body, method: "post" }),
+    put: (path, body, config) => mockGet(path, { ...(config || {}), data: body, method: "put" }),
+    request: (config) =>
+      mockGet(config.url, { params: config.params, data: config.data, method: config.method }),
+  };
 };
 
 const install = () => {

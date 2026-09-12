@@ -2,10 +2,11 @@ const axios = require("axios");
 const saavnConfig = require("../config/saavn");
 const { httpAgent, httpsAgent } = require("../config/http");
 const { logger } = require("./logger.service");
-const { getCache, setCache, makeCacheKey } = require("./cache.service");
+const { getCache, setCache, delCache, makeCacheKey } = require("./cache.service");
 const { normalizeTrack, normalizeAlbum, normalizeArtist, normalizePlaylist, getImage } = require("./saavn.mappers");
 const { sanitizePagination } = require("../utils/pagination");
 const { retry } = require("../utils/retry");
+const mapLimit = require("../utils/mapLimit");
 const jiosaavn = require("./jiosaavn.service");
 
 const client = axios.create({
@@ -36,12 +37,19 @@ const saavnGet = async (endpoint, params = {}) => {
         return data;
       } catch (err) {
         const status = err.response?.status;
-        if (endpoint.includes("/lyrics") && status === 404) {
-          throw new SaavnUnavailableError(status, endpoint);
-        }
-        if (status === 429 || status === 500 || status === 503 || !err.response) {
+        // Treat EVERY upstream failure the same way: unreachable (no response),
+        // throttled (429), broken proxy (5xx), or a plain 4xx (the proxy often
+        // returns 404 for a track the direct JioSaavn API still resolves). They
+        // all funnel into SaavnUnavailableError so withFallback can retry via
+        // the direct API instead of surfacing a raw 500/404.
+        if (!err.response || (status >= 400 && status <= 599)) {
           logger.warn({ status: status || "unreachable", endpoint }, "Saavn API unavailable, falling back to direct JioSaavn");
-          throw new SaavnUnavailableError(status || 0, endpoint);
+          const upstream = new SaavnUnavailableError(status || 0, endpoint);
+          // Carry a Retry-After hint (seconds -> ms) so the retry loop can
+          // back off by the upstream's own recommendation when throttled.
+          const wait = Number(err.response?.headers?.["retry-after"] || 0) * 1000;
+          if (wait > 0) upstream.retryAfterMs = wait;
+          throw upstream;
         }
         throw err;
       }
@@ -49,13 +57,29 @@ const saavnGet = async (endpoint, params = {}) => {
     {
       retries: 2,
       baseMs: 400,
+      maxTotalMs: 10000,
       shouldRetry: (err) => {
-        if (err instanceof SaavnUnavailableError && err.status === 404) return false;
+        if (err instanceof SaavnUnavailableError) {
+          // 429 is throttling — transient, worth a retry (backs off by the
+          // upstream's Retry-After when present).
+          if (err.status === 429) return true;
+          // Other 4xx are deterministic (the proxy resolved but refused) —
+          // retrying is pure latency, so fall straight through to the direct
+          // JioSaavn fallback.
+          if (err.status >= 400 && err.status < 500) return false;
+          // 5xx / network: a moment of upstream trouble — worth retrying.
+          return true;
+        }
         return true;
       },
     }
   );
-  setCache(cacheKey, data);
+  // Never cache broken payloads that arrived as 200 (e.g. { data: { error } }).
+  if (data && (!data.data || !data.data.error)) {
+    setCache(cacheKey, data);
+  } else {
+    delCache(cacheKey);
+  }
   return data;
 };
 
@@ -72,6 +96,14 @@ const withFallback = (proxyFn, directFn) => async (...args) => {
 
 const isValidEntity = (entity) =>
   Boolean(entity) && Boolean(entity.id) && Boolean(entity.name);
+
+// Splits a comma-separated id list (from ?ids=...) into a bounded array.
+const parseIdList = (ids, max = 20) =>
+  String(ids || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, max);
 
 // Ensures single-entity getters resolve to null (-> 404) when the upstream
 // returns an empty object for an invalid id instead of a 404 status.
@@ -106,6 +138,9 @@ const searchAlbums = withFallback(
           { query, page, total: results.length },
           "Proxy returned album results with no images, falling back to direct JioSaavn"
         );
+        // Drop the cached broken payload so the next request retries the proxy
+        // instead of getting served the poisoned copy forever.
+        delCache(makeCacheKey("saavn:/search/albums", { query, page, limit }));
         throw new SaavnUnavailableError(0, "broken-album-data");
       }
     }
@@ -149,6 +184,32 @@ const getTrackById = validateEntity(
   )
 );
 
+// Collection getter for GET /songs?ids=a,b,c. The proxy accepts a
+// comma-separated list in one call; if it is unavailable, fall back to
+// resolving each id through getTrackById (which itself falls back to
+// direct JioSaavn).
+const getTracks = withFallback(
+  async (ids) => {
+    const list = parseIdList(ids);
+    if (!list.length) return { total: 0, results: [] };
+    const data = await saavnGet("/songs", { ids: list.join(",") });
+    const results = (data.data || []).filter(isValidEntity).map(normalizeTrack);
+    return { total: results.length, results };
+  },
+  async (ids) => {
+    const list = parseIdList(ids, 10);
+    const found = (await mapLimit(list, 5, getTrackById)).filter(Boolean);
+    return { total: found.length, results: found };
+  }
+);
+
+// Similar-songs suggestions: GET /songs/{id}/suggestions
+const getTrackSuggestions = async (id) => {
+  const data = await saavnGet(`/songs/${id}/suggestions`);
+  const results = (data.data || []).map(normalizeTrack);
+  return { total: results.length, results };
+};
+
 const getAlbumById = validateEntity(
   withFallback(
     async (id) => {
@@ -159,6 +220,15 @@ const getAlbumById = validateEntity(
   )
 );
 
+// Collection getter for GET /albums?ids=a,b,c. The upstream only resolves a
+// single id per call, so each id is fetched through getAlbumById (which has
+// proxy -> direct JioSaavn fallback and entity validation).
+const getAlbums = async (ids) => {
+  const list = parseIdList(ids);
+  const found = (await mapLimit(list, 5, getAlbumById)).filter(Boolean);
+  return { total: found.length, results: found };
+};
+
 const getArtistById = validateEntity(
   withFallback(
     async (id, opts = {}) => {
@@ -168,6 +238,14 @@ const getArtistById = validateEntity(
     jiosaavn.getArtistById
   )
 );
+
+// Collection getter for GET /artists?ids=a,b,c. Same per-id strategy as
+// getAlbums because the upstream multi-id response is unreliable.
+const getArtists = async (ids) => {
+  const list = parseIdList(ids);
+  const found = (await mapLimit(list, 5, getArtistById)).filter(Boolean);
+  return { total: found.length, results: found };
+};
 
 const getArtistSongs = withFallback(
   async (id, opts = {}) => {
@@ -188,6 +266,19 @@ const getArtistAlbums = withFallback(
   },
   jiosaavn.getArtistAlbums
 );
+
+// Full playlist detail: GET /playlists?id=... The direct JioSaavn fallback has
+// no clean playlist endpoint, so this is proxy-only.
+const getPlaylistById = async (id) => {
+  const data = await saavnGet("/playlists", { id });
+  return data?.data && isValidEntity(data.data) ? normalizePlaylist(data.data) : null;
+};
+
+const getPlaylists = async (ids) => {
+  const list = parseIdList(ids);
+  const found = (await mapLimit(list, 5, getPlaylistById)).filter(Boolean);
+  return { total: found.length, results: found };
+};
 
 const getLyrics = withFallback(
   async (id) => {
@@ -271,10 +362,16 @@ module.exports = {
   searchArtists,
   searchPlaylists,
   getTrackById,
+  getTracks,
+  getTrackSuggestions,
   getAlbumById,
+  getAlbums,
   getArtistById,
+  getArtists,
   getArtistSongs,
   getArtistAlbums,
+  getPlaylistById,
+  getPlaylists,
   getLyrics,
   getLyricsByTitle,
   normalizeTrack,
