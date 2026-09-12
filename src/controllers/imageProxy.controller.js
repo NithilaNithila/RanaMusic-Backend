@@ -14,12 +14,20 @@ const ALLOWED_DOMAINS = [
   "m.media-amazon.com",
   "images-na.ssl-images-amazon.com",
   "music.amazon.com",
+  "aeon.co",
+  "amazon.com",
+  "amzn.co",
+  "cdn.amazon.com",
+  "images-na100.amazon.com",
+  "photos-na.s3.amazonaws.com",
+  "mosaic.tqlfi.com",
+  "via.placeholder.com",
 ];
 
 const isAllowedUrl = (url) => {
   try {
-    const hostname = new URL(url).hostname;
-    return ALLOWED_DOMAINS.some((d) => hostname === d || hostname.endsWith("." + d));
+    const hostname = new URL(url).hostname.toLowerCase();
+    return ALLOWED_DOMAINS.some((d) => hostname === d.toLowerCase() || hostname.endsWith("." + d.toLowerCase()));
   } catch (_) {
     return false;
   }
