@@ -61,6 +61,12 @@ app.use(requestLogger);
 
 // Security headers
 app.use(helmet({
+  crossOriginEmbedderPolicy: true,
+  crossOriginOpenerPolicy: { policy: "same-origin" },
+  crossOriginResourcePolicy: { policy: "same-origin" },
+  dnsPrefetchControl: true,
+
+  frameguard: { action: "deny" },
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
@@ -72,14 +78,9 @@ app.use(helmet({
       objectSrc: ["'none'"],
       mediaSrc: ["'self'", "https:"],
       frameSrc: ["'none'"],
+      "frame-ancestors": ["'self'"],
     },
   },
-  crossOriginEmbedderPolicy: true,
-  crossOriginOpenerPolicy: { policy: "same-origin" },
-  crossOriginResourcePolicy: { policy: "same-origin" },
-  dnsPrefetchControl: true,
-
-  frameguard: { action: "deny" },
   hidePoweredBy: true,
   hsts: {
     maxAge: 31536000, // 1 year
