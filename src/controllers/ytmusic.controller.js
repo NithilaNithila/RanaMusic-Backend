@@ -6,17 +6,18 @@ const ytConfig = require("../config/ytmusic");
 
 const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
-const sendStreamError = (res, err) => {
-  if (res.headersSent) {
-    try {
-      res.destroy();
-    } catch (_) {
-      // socket already gone
+const sendStreamError = (res, err, customStatus = 502) => {
+  // ←←← ALWAYS set CORP header even on errors ←←←
+  try {
+    if (!res.headersSent) {
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
     }
-    return undefined;
-  }
-  const status = err && err.status ? err.status : 502;
-  return ApiResponse.error(res, (err && err.message) || "Stream unavailable", status);
+  } catch (_) {}
+  
+  const status = err && err.status !== undefined ? err.status : customStatus;
+  const message = err && err.message ? err.message : "Stream unavailable";
+  return ApiResponse.error(res, message, status);
 };
 
 // Streams the raw audio bytes for a YouTube Music videoId. Not a JSON
@@ -24,18 +25,16 @@ const sendStreamError = (res, err) => {
 const stream = async (req, res) => {
   const id = String(req.params.id || "").trim();
   if (!VIDEO_ID_RE.test(id)) {
-    return ApiResponse.error(res, "Invalid video id", 400);
+    return sendStreamError(res, new Error("Invalid video id"), 400);
   }
   if (!ytService.isEnabled()) {
-    return ApiResponse.error(res, "YouTube Music streaming is disabled", 503);
+    return sendStreamError(res, new Error("YouTube Music is disabled"), 503);
   }
   if (ytService.isBreakerOpen()) {
-    return ApiResponse.error(res, "Source temporarily unavailable", 503);
+    // Breaker open — return 503 with CORP header so client doesn't hang
+    return sendStreamError(res, new Error("Source temporarily unavailable"), 503);
   }
 
-  // Flag first so a client that detaches DURING the multi-second info probe is
-  // detected the moment the await resolves — closing the kill-race window
-  // where a child could otherwise be spawned for a socket that is already gone.
   let clientGone = false;
   let child = null;
   req.on("close", () => {
@@ -55,8 +54,6 @@ const stream = async (req, res) => {
   } catch (err) {
     return sendStreamError(res, err);
   }
-  // Client detached while the probe ran — don't pay for a stream nobody
-  // consumes.
   if (clientGone || res.destroyed) return undefined;
 
   try {
@@ -64,7 +61,6 @@ const stream = async (req, res) => {
   } catch (err) {
     return sendStreamError(res, err);
   }
-  // Re-check after spawn; a close may have raced the spawn.
   if (clientGone || res.destroyed) {
     try {
       child.kill("SIGKILL");
@@ -74,23 +70,17 @@ const stream = async (req, res) => {
     return undefined;
   }
 
-  res.status(200);
+  // ←←← ADD THESE HEADERS IMMEDIATELY, BEFORE pipeline ←←←
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
   res.setHeader("Content-Type", info.contentType);
   res.setHeader("Cache-Control", "private, max-age=3600");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  // The <audio> element loads the stream cross-origin (frontend :5173 ->
-  // backend :5000) with a no-cors fetch. The global helmet middleware sets
-  // Cross-Origin-Resource-Policy: same-origin, which makes Chrome refuse the
-  // media load entirely (silent player, stream still served fine to curl).
-  // Media streams opt out: the bytes are public audio, not user data.
-  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
-  // Commit the 200 immediately so the client sees a started response instead
-  // of waiting on yt-dlp to begin producing bytes.
+  // ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+
+  res.status(200);
   res.flushHeaders();
 
-  // First-byte budget: if yt-dlp produces no audio within
-  // streamStartTimeoutMs (bot-check, DNS blackhole, throttled format), kill
-  // the child and the socket rather than leaving both open indefinitely.
   let firstByte = false;
   const firstByteTimer = setTimeout(() => {
     if (!firstByte && !res.writableEnded) {
