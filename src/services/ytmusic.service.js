@@ -754,6 +754,40 @@ const maskProxy = (url) => {
   }
 };
 
+// Prove whether the configured proxy is actually reachable from THIS host and
+// what exit IP YouTube would see, using exactly ytConfig.proxyUrl. Axios' proxy
+// option takes host/port/auth separately, so parse the URL first.
+const parseProxyUrl = (raw) => {
+  try {
+    const u = new URL(raw);
+    if (!u.hostname || !u.port) return null;
+    return {
+      protocol: u.protocol === "https:" ? "https" : "http",
+      host: u.hostname,
+      port: Number(u.port) || 80,
+      auth: u.username || u.password ? { username: u.username, password: u.password } : undefined,
+    };
+  } catch (_) {
+    return null;
+  }
+};
+
+const probeProxy = async () => {
+  const raw = ytConfig.proxyUrl;
+  if (!raw) return { reachable: false, reason: "no proxy configured" };
+  const parsed = parseProxyUrl(raw);
+  if (!parsed) return { reachable: false, reason: "invalid proxy url" };
+  try {
+    const { data } = await axios.get("https://ipinfo.io/org", {
+      proxy: parsed,
+      timeout: 20000,
+    });
+    return { reachable: true, org: String(data) };
+  } catch (err) {
+    return { reachable: false, reason: (err && err.message) || "unreachable" };
+  }
+};
+
 // Gated diagnostic: runs the real yt-dlp --list-formats on THIS server using
 // the packaged binary, configured cookies, player client and proxy, so a
 // hosted instance can show what actually comes back (formats vs bot-check vs
@@ -789,6 +823,7 @@ const debugFormats = (videoId) =>
 // Operational snapshot for /api/ytmusic/status. The health signal for the free
 // cookies-first setup: when botCheckCount grows and lastBotCheckAt is recent,
 // refresh YT_COOKIES_B64 (or add YT_COOKIES) rather than touching code.
+// refresh YT_COOKIES_B64 (or add YT_COOKIES) rather than touching code.
 const getStatus = () => ({
   enabled: isEnabled(),
   breakerOpen: isBreakerOpen(),
@@ -819,5 +854,6 @@ module.exports = {
   getStatus,
   getYtDlpVersion,
   debugFormats,
+  probeProxy,
   killAllStreams,
 };

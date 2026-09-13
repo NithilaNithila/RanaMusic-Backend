@@ -227,7 +227,8 @@ const debugFormats = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Invalid video id", 400);
   }
   const result = await ytService.debugFormats(id);
-  return ApiResponse.success(res, result, "Format probe complete");
+  const proxyProbe = await ytService.probeProxy();
+  return ApiResponse.success(res, { ...result, proxyProbe }, "Format probe complete");
 });
 
 module.exports = {
