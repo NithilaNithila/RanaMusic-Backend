@@ -45,6 +45,31 @@ const cookieFingerprint = () => {
   }
 };
 
+// Overwrite the in-use cookies file (the temp file decoded from YT_COOKIES_B64
+// at boot, or an auth-gated refresh) with new Netscape-format content passed as
+// base64. Lets ops swap cookies on an ephemeral host (Render) without a redeploy
+// or env edit. Validates the decoded text looks like a Netscape cookie file,
+// clears the fingerprint cache, and returns the new fingerprint.
+const fs = require("node:fs");
+const crypto = require("node:crypto");
+const setCookiesFromBase64 = (b64) => {
+  const trimmed = String(b64 || "").trim();
+  if (!trimmed) throw new YtStreamError("Missing base64 cookies", 400);
+  let text;
+  try {
+    text = Buffer.from(trimmed, "base64").toString("utf8");
+  } catch (_) {
+    throw new YtStreamError("Invalid base64", 400);
+  }
+  if (!/^#( Netscape)? HTTP Cookie File/i.test(String(text).trim().split(/\r?\n/)[0])) {
+    throw new YtStreamError("Base64 does not decode to a Netscape cookie file", 400);
+  }
+  fs.writeFileSync(ytConfig.cookieFilePath, text, { encoding: "utf8", mode: 0o600 });
+  ytConfig.cookiesPath = ytConfig.cookieFilePath;
+  cookieFingerprintCache = null;
+  return cookieFingerprint();
+};
+
 const JSON_RETRIES = 1;
 const JSON_INFO_TTL = 600; // seconds - per-video info is stable
 const SEARCH_TTL = 600;
@@ -890,5 +915,6 @@ module.exports = {
   getYtDlpVersion,
   debugFormats,
   probeProxy,
+  setCookiesFromBase64,
   killAllStreams,
 };

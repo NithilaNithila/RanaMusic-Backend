@@ -231,11 +231,30 @@ const debugFormats = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, { ...result, proxyProbe }, "Format probe complete");
 });
 
+// Gated admin action: replace the in-use cookies file in-place (no redeploy, no
+// env edit) from a base64 payload, then report the new fingerprint so it can be
+// matched against a local cookies.txt. Same YT_DEBUG_TOKEN gate as diagnostics.
+const updateCookies = asyncHandler(async (req, res) => {
+  const token = process.env.YT_DEBUG_TOKEN || "";
+  if (!token || (req.query.p || req.query.token) !== token) {
+    return ApiResponse.error(res, "Not authorized", 403);
+  }
+  const b64 = String((req.body && (req.body.base64 || req.body.cookies)) || "").trim();
+  if (!b64) return ApiResponse.error(res, "Missing 'base64' in body", 400);
+  try {
+    const fingerprint = ytService.setCookiesFromBase64(b64);
+    return ApiResponse.success(res, { updated: true, cookies: fingerprint }, "Cookies updated");
+  } catch (err) {
+    return ApiResponse.error(res, (err && err.message) || "Update failed", (err && err.status) || 400);
+  }
+});
+
 module.exports = {
   stream,
   search,
   status,
   debugFormats,
+  updateCookies,
   playlist,
   playlistTracks,
   album,

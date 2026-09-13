@@ -123,4 +123,8 @@ module.exports = {
   },
   // Exposed for tests; returns the resolved cookie file path ("" when none).
   __resolveCookiesPath: resolveCookiesPath,
+  // Fixed temp path used for decoded YT_COOKIES_B64 content. Exposed so an
+  // auth-gated admin route can refresh the cookies in-place (overwrite the temp
+  // file) on an ephemeral host without a redeploy or env edit.
+  cookieFilePath: path.join(os.tmpdir(), "ranamusic-yt-cookies.txt"),
 };

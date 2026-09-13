@@ -17,6 +17,11 @@ router.get("/status", asyncHandler(yt.status));
 // actually receives. Disabled unless YT_DEBUG_TOKEN is set.
 router.get("/debug-formats/:id(\\w{11})", asyncHandler(yt.debugFormats));
 
+// Gated refresh of the in-use cookies file: POST base64 cookies to replace the
+// temp file in-place (no redeploy / env edit on ephemeral hosts). Same token
+// gate as /debug-formats above.
+router.post("/cookies", asyncHandler(yt.updateCookies));
+
 // In-process yt-dlp audio stream for a YouTube Music videoId. Public (the
 // client plays audio via an <audio> tag that can't attach Bearer headers), so
 // it is guarded by the global rate limiter + a stricter per-IP stream limiter
