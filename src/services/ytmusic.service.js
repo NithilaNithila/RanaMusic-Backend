@@ -745,6 +745,15 @@ const killAllStreams = () => {
   liveChildren.clear();
 };
 
+const maskProxy = (url) => {
+  if (!url) return "";
+  try {
+    return url.replace(/:[^:@/]+@/, ":*****@");
+  } catch (_) {
+    return url;
+  }
+};
+
 // Gated diagnostic: runs the real yt-dlp --list-formats on THIS server using
 // the packaged binary, configured cookies, player client and proxy, so a
 // hosted instance can show what actually comes back (formats vs bot-check vs
@@ -765,7 +774,17 @@ const debugFormats = (videoId) =>
     .catch((err) => {
       const msg = (err && err.stderr) || (err && err.message) || String(err);
       return { ok: false, error: String(msg).split("\n").slice(0, 20) };
-    });
+    })
+    .then((result) => ({
+      ...result,
+      config: {
+        playerClient: ytConfig.playerClient || "",
+        format: ytConfig.format,
+        proxyUrl: maskProxy(ytConfig.proxyUrl),
+        cookiesConfigured: Boolean(ytConfig.cookiesPath),
+        binaryPath: ytConfig.binaryPath || "packaged",
+      },
+    }));
 
 // Operational snapshot for /api/ytmusic/status. The health signal for the free
 // cookies-first setup: when botCheckCount grows and lastBotCheckAt is recent,
