@@ -293,6 +293,37 @@ test("resolvePlayableAudio keeps the original when YouTube finds nothing", async
   assert.strictEqual(ytStub.calls.search, 1);
 });
 
+test("resolveSaavnOnly resolves a preview from Saavn and never spawns YouTube", async () => {
+  ytStub._enabled = true;
+  ytStub._rows = [ytRow("dQw4w9WgXcQ", "Vaathi Coming", { artist: "Anirudh" })];
+  axiosMock.setHandler((path) => {
+    assert.match(path, /search\/songs/);
+    return Promise.resolve({ data: { data: songData } });
+  });
+  const out = await resolver.resolveSaavnOnly({
+    name: "Vaathi Coming",
+    artist: "Anirudh",
+    audioUrl: "https://p.scdn.co/mp3-preview/xyz",
+    duration: 150,
+  });
+  assert.strictEqual(out.audioUrl, "https://cdn.example/full.mp3");
+  assert.strictEqual(ytStub.calls.search, 0);
+});
+
+test("resolveSaavnOnly keeps the original when Saavn misses (no YouTube fallback)", async () => {
+  ytStub._enabled = true;
+  ytStub._rows = [ytRow("dQw4w9WgXcQ", "Some Obscure Track", { artist: "Nobody" })];
+  axiosMock.respond({ data: { results: [] } });
+  const out = await resolver.resolveSaavnOnly({
+    name: "Unfindable Track",
+    artist: "Nobody",
+    audioUrl: "https://p.scdn.co/mp3-preview/xyz",
+    duration: 150,
+  });
+  assert.strictEqual(out.audioUrl, "https://p.scdn.co/mp3-preview/xyz");
+  assert.strictEqual(ytStub.calls.search, 0);
+});
+
 test("findYtFullTrack rejects a mismatched title from YouTube Music", async () => {
   ytStub._enabled = true;
   ytStub._rows = [ytRow("dQw4w9WgXcQ", "Completely Different Song", { artist: "Nobody" })];

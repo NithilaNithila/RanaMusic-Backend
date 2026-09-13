@@ -3,11 +3,21 @@ const spotifyService = require("./spotify.service");
 const amazonWebService = require("./amazonWeb.service");
 const ytmusicService = require("./ytmusic.service");
 const { memoize, makeCacheKey } = require("./cache.service");
-const { resolvePlayableAudio, isPreviewAudioUrl } = require("./trackResolver.service");
+const { resolvePlayableAudio, resolveSaavnOnly, isPreviewAudioUrl } = require("./trackResolver.service");
 const mapLimit = require("../utils/mapLimit");
 const SEARCH_TTL = 600; // 5 min - unified search hits 4 provider APIs
 // Covers change slowly; 24h for image lookups so repeated searches hit a warm cache.
 const IMAGE_FILL_TTL = 86400;
+
+// The search page resolves MANY rows at once. Enrichment (merged list,
+// source-tab lists, image fills) runs under ONE shared clock so a cold or slow
+// upstream can never push a search past this ceiling; on timeout the raw rows
+// are returned (unresolved tracks still play via /tracks/resolve at play time).
+const ENRICH_TOTAL_BUDGET_MS = 9000;
+const makeEnrichClock = () => {
+  const start = Date.now();
+  return { start, left: () => Math.max(0, ENRICH_TOTAL_BUDGET_MS - (Date.now() - start)) };
+};
 
 const clampLimit = (limit) => Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
 const clampOffset = (offset) => Math.max(parseInt(offset, 10) || 0, 0);
@@ -197,13 +207,17 @@ const fillMissingImages = async (type, items) => {
 // Spotify and Amazon rows carry no audio (or only a 16s Spotify preview), so
 // they wouldn't play. Replaces that audio with a full-length copy (Saavn).
 // Already playable rows are untouched, so Saavn results cost nothing.
-const makePlayable = async (track) => {
+// opts.saavnOnly skips the YouTube backstop: the search page resolves MANY rows
+// at once, and spawning yt-dlp for every unmatched track is both slow and heavy
+// on a small instance. Detail/play endpoints keep the full backstop by default.
+const makePlayable = async (track, opts = {}) => {
   if (!track) return track;
   // Skip already-resolved tracks (Spotify/Amazon resolve audio in their own
   // search methods; Saavn tracks always have full CDN audio). Only unresolved
   // tracks need the Saavn/YT fallback here.
   if (track.audio && !isPreviewAudioUrl(track.audio)) return track;
-  const { audioUrl, duration } = await resolvePlayableAudio({
+  const resolver = opts.saavnOnly ? resolveSaavnOnly : resolvePlayableAudio;
+  const { audioUrl, duration } = await resolver({
     name: track.name,
     artist: track.artist_name,
     audioUrl: track.audio,
@@ -218,11 +232,11 @@ const makePlayable = async (track) => {
 // Ensures every returned track (and every song inside album/playlist rows)
 // actually has playable audio. Bounded to 5 in-flight resolutions so a big
 // result set can't fan out against the resolvers all at once.
-const enrichPlayable = async (items, type) => {
+const enrichPlayable = async (items, type, opts = {}) => {
   if (!items || !items.length) return items || [];
 
   if (type === "track") {
-    return mapLimit(items, 5, makePlayable);
+    return mapLimit(items, 5, (t) => makePlayable(t, opts));
   }
 
   const tasks = [];
@@ -236,7 +250,7 @@ const enrichPlayable = async (items, type) => {
   const updated = await mapLimit(tasks, 5, async ({ idx, j, song }) => ({
     idx,
     j,
-    song: await makePlayable(song),
+    song: await makePlayable(song, opts),
   }));
   const next = items.map((item) =>
     item && Array.isArray(item.songs) && item.songs.length
@@ -249,10 +263,10 @@ const enrichPlayable = async (items, type) => {
 
 // Enriches rows with playable audio + missing artwork in one combined pass.
 // Used for the merged results list.
-const enrichRows = async (type, rows) => {
+const enrichRows = async (type, rows, opts = {}) => {
   if (!rows || !rows.length) return rows || [];
   const [playable, imaged] = await Promise.all([
-    enrichPlayable(rows, type),
+    enrichPlayable(rows, type, opts),
     fillMissingImages(type, rows),
   ]);
   return imaged.map((row, i) => {
@@ -336,10 +350,25 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
       KEYS.track,
       limit
     );
-    const enrichedMerged = await enrichRows(type, merged);
 
-    // The merged list's enrichment already resolved full audio (Saavn CDN or
-    // the YouTube backstop) for the tracks above. Stamp that work onto the
+    // A page resolves MANY rows at once, and spawning yt-dlp for every track a
+    // provider can't cover is both slow and heavy on a small free instance (it
+    // was crashing under the load). Search rows are therefore resolved Saavn-only
+    // — full audio still lands on the merged page and the economical Saavn CDN,
+    // and the ~20% Saavn can't match defer to /tracks/resolve (which uses the
+    // YouTube backstop) when the user actually taps play.
+    //
+    // The whole enrichment runs under ONE shared clock: the merged list gets
+    // first claim, the source-list pass keeps whatever remains. On timeout we
+    // return the raw merged rows rather than stalling the page behind a slow
+    // upstream.
+    const clock = makeEnrichClock();
+
+    const enrichedMerged =
+      (await withDeadline(clock.left() || 2500, enrichRows(type, merged, { saavnOnly: true }))) || merged;
+
+    // The merged list's enrichment already resolved full audio (Saavn) for the
+    // tracks above. Stamp that work onto the
     // matching per-provider rows too — zero extra upstream calls — so a tap on
     // any source tab that also appeared on the merged page plays IMMEDIATELY
     // instead of a separate /tracks/resolve round-trip (which is slow on a
@@ -364,24 +393,26 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
 
     // Source-tab rows that didn't make the merged page (limit cutoff) may
     // still lack full-length audio — raw Spotify previews and Amazon rows have
-    // none by design. Resolve those too so every tab row plays immediately
-    // instead of deferring to /tracks/resolve at play time. Rows the merged
-    // pass already enriched short-circuit in makePlayable (full audio), and
-    // the Saavn searches behind them are warm from that pass, so a hit page
-    // costs almost nothing extra. The whole pass is deadline-bounded: a slow
-    // cold resolver falls back to the original rows rather than stalling the
-    // tab behind a bot-checked or sleeping upstream.
-    const resolveListAudio = async (rows) => {
+    // none by design. Resolve those too (Saavn-only, bounded by whatever is
+    // left on the shared clock) so every tab row plays immediately where
+    // possible; unresolved rows fall back to /tracks/resolve at play time.
+    // Rows the merged pass already enriched short-circuit in makePlayable
+    // (full audio), and the Saavn searches behind them are warm from that pass,
+    // so a hit page costs almost nothing extra.
+    const listMinimumMs = 1500;
+    const perListBudget = Math.max(clock.left(), listMinimumMs * 3) / 3;
+    const resolveListAudio = async (rows, budgetMs) => {
       if (!rows || !rows.length) return rows || [];
       if (!rows.some((r) => !r || !r.audio || isPreviewAudioUrl(r.audio))) return rows;
-      const updated = await withDeadline(9000, mapLimit(rows, 5, makePlayable));
+      const budget = Math.max(budgetMs, listMinimumMs);
+      const updated = await withDeadline(budget, mapLimit(rows, 5, (t) => makePlayable(t, { saavnOnly: true })));
       return updated || rows;
     };
 
     const audioResolved = await Promise.all([
-      resolveListAudio(bySource.spotify),
-      resolveListAudio(bySource.ytmusic),
-      resolveListAudio(bySource.amazon),
+      resolveListAudio(bySource.spotify, perListBudget),
+      resolveListAudio(bySource.ytmusic, perListBudget),
+      resolveListAudio(bySource.amazon, perListBudget),
     ]);
     bySource.spotify = audioResolved[0];
     bySource.ytmusic = audioResolved[1];
@@ -404,11 +435,16 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
     return { merged: enrichedMerged, tracksBySource };
   }
 
-  // ── non-track types: single merged stream (unchanged) ──────────────────
+  // ── non-track types: single merged stream ─────────────────────────────
   // Rows are tagged with their provider so the UI can route albums/playlists
   // to the right detail endpoint (?source=...) instead of guessing Saavn.
+  // Enrichment is Saavn-only and bounded by the same total-budget clock used
+  // for the track branch.
   const arrays = providers.map((p) => tag(p.rows, p.source));
-  const merged = await enrichRows(type, merge(arrays, KEYS[type], limit));
+  const raw = merge(arrays, KEYS[type], limit);
+  const clock = makeEnrichClock();
+  const merged =
+    (await withDeadline(Math.max(clock.left(), 2500), enrichRows(type, raw, { saavnOnly: true }))) || raw;
   return { merged, tracksBySource: null };
 };
 

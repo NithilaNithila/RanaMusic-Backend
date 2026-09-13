@@ -261,6 +261,33 @@ const resolvePlayableAudio = (opts) =>
     duration: opts.duration,
   });
 
+// Saavn-only resolution for cheap, subprocess-free lookups — used by the search
+// page where MANY rows are resolved at once. The full resolvePlayableAudio
+// spawns an in-process yt-dlp search for every unmatched row (7s budget each);
+// on a page of unresolvable tracks that is both slow and heavy enough to push a
+// small free instance over its memory budget. Detail/play endpoints that can
+// afford the YouTube backstop keep using resolvePlayableAudio. Best-effort:
+// missing/unchanged audio is preserved, so rows fall back to /tracks/resolve at
+// play time.
+const RESOLVE_SAVN_ONLY_DEADLINE_MS = 6000;
+const resolveSaavnOnly = (opts) =>
+  withTimeout(
+    (async () => {
+      if (!isPreviewAudioUrl(opts.audioUrl)) return { audioUrl: opts.audioUrl, duration: opts.duration };
+      try {
+        const full = await withTimeout(findFullTrack({ name: opts.name, artist: opts.artist }), 5000);
+        if (full && full.audio) {
+          return { audioUrl: full.audio, duration: full.duration || opts.duration, image: full.image || "" };
+        }
+      } catch (err) {
+        // Best-effort: preserve the original audio on any search failure.
+      }
+      return { audioUrl: opts.audioUrl, duration: opts.duration };
+    })(),
+    RESOLVE_SAVN_ONLY_DEADLINE_MS,
+    { audioUrl: opts.audioUrl, duration: opts.duration }
+  );
+
 module.exports = {
   isPreviewAudioUrl,
   parseArtists,
@@ -268,4 +295,5 @@ module.exports = {
   findYtFullTrack,
   withTimeout,
   resolvePlayableAudio,
+  resolveSaavnOnly,
 };
