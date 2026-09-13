@@ -12,6 +12,11 @@ router.get("/search", asyncHandler(search));
 // datacenter IP). Call this before blaming streaming when playback 403s.
 router.get("/status", asyncHandler(yt.status));
 
+// Gated diagnostics: ?p=<YT_DEBUG_TOKEN> runs the real --list-formats on this
+// server (binary + cookies + client + proxy) to show what a hosted instance
+// actually receives. Disabled unless YT_DEBUG_TOKEN is set.
+router.get("/debug-formats/:id(\\w{11})", asyncHandler(yt.debugFormats));
+
 // In-process yt-dlp audio stream for a YouTube Music videoId. Public (the
 // client plays audio via an <audio> tag that can't attach Bearer headers), so
 // it is guarded by the global rate limiter + a stricter per-IP stream limiter

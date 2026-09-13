@@ -745,6 +745,28 @@ const killAllStreams = () => {
   liveChildren.clear();
 };
 
+// Gated diagnostic: runs the real yt-dlp --list-formats on THIS server using
+// the packaged binary, configured cookies, player client and proxy, so a
+// hosted instance can show what actually comes back (formats vs bot-check vs
+// proxy unreachable). Wrapped so any failure returns { error } instead of
+// throwing — the diagnostic must never break the service.
+const debugFormats = (videoId) =>
+  resolvedBinary
+    .exec(
+      watchUrl(videoId),
+      buildFlags({ listFormats: true, noPlaylist: true, quiet: false, noWarnings: false }),
+      { ...SPAWN_OPTS, timeout: 45000, killSignal: "SIGKILL" }
+    )
+    .then((out) => {
+      const text = String((out && out.stdout) || "");
+      const lines = text.split("\n").filter((l) => l.trim());
+      return { ok: true, lines: lines.slice(0, 120) };
+    })
+    .catch((err) => {
+      const msg = (err && err.stderr) || (err && err.message) || String(err);
+      return { ok: false, error: String(msg).split("\n").slice(0, 20) };
+    });
+
 // Operational snapshot for /api/ytmusic/status. The health signal for the free
 // cookies-first setup: when botCheckCount grows and lastBotCheckAt is recent,
 // refresh YT_COOKIES_B64 (or add YT_COOKIES) rather than touching code.
@@ -777,5 +799,6 @@ module.exports = {
   mapError,
   getStatus,
   getYtDlpVersion,
+  debugFormats,
   killAllStreams,
 };

@@ -212,10 +212,29 @@ const status = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, snapshot, "YouTube Music status");
 });
 
+// Gated diagnostics: runs the REAL yt-dlp format listing ON this server using
+// the packaged binary, the configured cookies, player client and proxy, then
+// returns the raw --list-formats output. Enabled only when the query `p`
+// matches YT_DEBUG_TOKEN (set the env var temporarily). Lets us see whether a
+// hosted instance (Render) actually reaches the proxy / gets formats.
+const debugFormats = asyncHandler(async (req, res) => {
+  const token = process.env.YT_DEBUG_TOKEN || "";
+  const id = String(req.params.id || "").trim();
+  if (!token || req.query.p !== token) {
+    return ApiResponse.error(res, "Not authorized", 403);
+  }
+  if (!/^[A-Za-z0-9_-]{11}$/.test(id)) {
+    return ApiResponse.error(res, "Invalid video id", 400);
+  }
+  const result = await ytService.debugFormats(id);
+  return ApiResponse.success(res, result, "Format probe complete");
+});
+
 module.exports = {
   stream,
   search,
   status,
+  debugFormats,
   playlist,
   playlistTracks,
   album,
