@@ -468,7 +468,10 @@ const buildFlags = (extra = {}) => {
   };
   if (ytConfig.playerClient) flags.extractorArgs = `youtube:player_client=${ytConfig.playerClient}`;
   if (ytConfig.cookiesPath) flags.cookies = ytConfig.cookiesPath;
-  if (ytConfig.proxyUrl) flags.proxy = ytConfig.proxyUrl;
+  if (ytConfig.proxyUrl) {
+    flags.proxy = ytConfig.proxyUrl;
+    if (ytConfig.insecureProxy) flags.noCheckCertificate = true;
+  }
   return flags;
 };
 

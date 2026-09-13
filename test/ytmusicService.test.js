@@ -298,9 +298,26 @@ test("spawnStream returns a child configured for raw audio output", async () => 
   const service = loadService();
   const child = service.spawnStream("dQw4w9WgXcQ");
   assert.strictEqual(captured.flags.output, "-");
-  assert.strictEqual(captured.flags.format, "bestaudio[ext=m4a]/bestaudio");
+  assert.strictEqual(captured.flags.format, "bestaudio[ext=m4a]/bestaudio/best");
   assert.match(captured.url, /watch\?v=dQw4w9WgXcQ/);
   assert.strictEqual(typeof child.stdout.pipe, "function");
+});
+
+test("spawnStream with an https:// proxy relaxes certificate verification", async () => {
+  let captured;
+  stubYtDlp((url, flags) => {
+    captured = { url, flags };
+    return makeChild({});
+  });
+  process.env.YT_PROXY = "https://res-any:pass@gw.proxyrise.com:443";
+  try {
+    const service = loadService();
+    service.spawnStream("dQw4w9WgXcQ");
+    assert.strictEqual(captured.flags.proxy, "https://res-any:pass@gw.proxyrise.com:443");
+    assert.strictEqual(captured.flags.noCheckCertificate, true);
+  } finally {
+    delete process.env.YT_PROXY;
+  }
 });
 
 test("circuit breaker opens after a streak of bot-checks and short-circuits", async () => {

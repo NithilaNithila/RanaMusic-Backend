@@ -69,6 +69,11 @@ module.exports = {
   // yt-dlp setup flags (defaults chosen for reliability on datacenter IPs).
   cookiesPath: resolvedCookiesPath, // real file path (YT_COOKIES) or decoded YT_COOKIES_B64
   proxyUrl: process.env.YT_PROXY || "", // http(s) proxy for yt-dlp
+  // Some residential gateways (e.g. proxyrise.com) listen on TLS but present a
+  // private CA cert that public trust stores reject. When the proxy URL is an
+  // https:// endpoint, relax yt-dlp's certificate check so the TLS-to-proxy
+  // handshake can succeed.
+  insecureProxy: /^https:\/\//i.test(process.env.YT_PROXY || ""),
   // Cookies present -> default to `web_embedded`. The web/mweb flow throws
   // "The page needs to be reloaded" (JS-reload challenge) on cautious
   // datacenter IPs, and `tv` does the same (verified locally). The embedded

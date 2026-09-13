@@ -7,11 +7,13 @@ const CFG_PATH = require.resolve("../src/config/ytmusic");
 
 // The config resolves env vars at require time, so each case re-requires a
 // fresh module with the env shape it needs.
-const loadConfig = ({ ytCookies, ytCookiesB64 }) => {
+const loadConfig = ({ ytCookies, ytCookiesB64, ytProxy }) => {
   if (ytCookies === undefined) delete process.env.YT_COOKIES;
   else process.env.YT_COOKIES = ytCookies;
   if (ytCookiesB64 === undefined) delete process.env.YT_COOKIES_B64;
   else process.env.YT_COOKIES_B64 = ytCookiesB64;
+  if (ytProxy === undefined) delete process.env.YT_PROXY;
+  else process.env.YT_PROXY = ytProxy;
   delete require.cache[CFG_PATH];
   return require("../src/config/ytmusic");
 };
@@ -19,6 +21,7 @@ const loadConfig = ({ ytCookies, ytCookiesB64 }) => {
 const clearEnv = () => {
   delete process.env.YT_COOKIES;
   delete process.env.YT_COOKIES_B64;
+  delete process.env.YT_PROXY;
   delete require.cache[CFG_PATH];
 };
 
@@ -79,5 +82,28 @@ test("garbage YT_COOKIES_B64 never crashes boot (falls back to no cookies)", () 
   clearEnv();
   const cfg = loadConfig({ ytCookies: "", ytCookiesB64: "%%%not-base64%%%" });
   assert.strictEqual(cfg.cookiesPath, "");
+  clearEnv();
+});
+
+test("https:// YT_PROXY marks the proxy as insecure (private-CA gateway)", () => {
+  clearEnv();
+  const cfg = loadConfig({
+    ytCookies: "",
+    ytCookiesB64: "",
+    ytProxy: "https://res-any:pass@gw.proxyrise.com:443",
+  });
+  assert.strictEqual(cfg.proxyUrl, "https://res-any:pass@gw.proxyrise.com:443");
+  assert.strictEqual(cfg.insecureProxy, true);
+  clearEnv();
+});
+
+test("http:// YT_PROXY stays fully verified", () => {
+  clearEnv();
+  const cfg = loadConfig({
+    ytCookies: "",
+    ytCookiesB64: "",
+    ytProxy: "http://user:pass@1.2.3.4:3128",
+  });
+  assert.strictEqual(cfg.insecureProxy, false);
   clearEnv();
 });
