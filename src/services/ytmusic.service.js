@@ -725,7 +725,7 @@ let ytDlpVersionPromise = null;
 const getYtDlpVersion = () => {
   if (!ytDlpVersionPromise) {
     ytDlpVersionPromise = resolvedBinary
-      .exec("--version", {}, { timeout: 10000 })
+      .exec("--version", {}, { timeout: 20000 })
       .then((out) => String((out && out.stdout) || out || "").trim())
       .catch(() => "");
   }
@@ -756,6 +756,7 @@ const getStatus = () => ({
   cookiesConfigured: Boolean(ytConfig.cookiesPath),
   playerClient: ytConfig.playerClient || "",
   proxyConfigured: Boolean(ytConfig.proxyUrl),
+  binaryPath: ytConfig.binaryPath || "packaged (yt-dlp-exec auto-download)",
   binaryVersion: null,
   activeStreams,
   maxConcurrentStreams: ytConfig.maxConcurrentStreams,
