@@ -726,7 +726,7 @@ const getYtDlpVersion = () => {
   if (!ytDlpVersionPromise) {
     ytDlpVersionPromise = resolvedBinary
       .exec("--version", {}, { timeout: 10000 })
-      .then((out) => String(out || "").trim())
+      .then((out) => String((out && out.stdout) || out || "").trim())
       .catch(() => "");
   }
   return ytDlpVersionPromise;
