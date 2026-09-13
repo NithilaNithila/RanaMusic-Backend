@@ -778,11 +778,19 @@ const probeProxy = async () => {
   const parsed = parseProxyUrl(raw);
   if (!parsed) return { reachable: false, reason: "invalid proxy url" };
   try {
-    const { data } = await axios.get("https://ipinfo.io/org", {
+    const { data } = await axios.get("https://ipinfo.io/json", {
       proxy: parsed,
       timeout: 20000,
     });
-    return { reachable: true, org: String(data) };
+    const info = data && typeof data === "object" ? data : {};
+    return {
+      reachable: true,
+      ip: String(info.ip || ""),
+      org: String(info.org || "").replace(/\s+/g, " "),
+      city: String(info.city || ""),
+      region: String(info.region || ""),
+      country: String(info.country || ""),
+    };
   } catch (err) {
     return { reachable: false, reason: (err && err.message) || "unreachable" };
   }
