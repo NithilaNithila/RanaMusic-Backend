@@ -32,6 +32,26 @@ class YtStreamError extends Error {
 
 const isEnabled = () => ytConfig.enabled;
 
+// Warn once at boot when the free cookies-first setup is incomplete: without
+// a logged-in cookies.txt, datacenter IPs (Render free) get "Sign in to
+// confirm you're not a bot" 403s and the circuit breaker opens.
+if (ytConfig.enabled && !ytConfig.cookiesPath) {
+  logger.warn(
+    "YouTube Music is enabled but no cookies are configured (set YT_COOKIES or YT_COOKIES_B64) — datacenter IPs will hit bot checks"
+  );
+}
+
+// Bot-check (403) tracking for the /api/ytmusic/status health signal. A rising
+// count with recent lastBotCheckAt means cookies expired or the IP got flagged
+// — time to refresh YT_COOKIES_B64, not to change code.
+let botCheckCount = 0;
+let lastBotCheckAt = null;
+
+const recordBotCheck = () => {
+  botCheckCount += 1;
+  lastBotCheckAt = new Date().toISOString();
+};
+
 const disabledError = () =>
   new YtStreamError("YouTube Music is disabled (YT_ENABLED=false)", 503);
 
@@ -49,6 +69,10 @@ const isBreakerOpen = () => Date.now() < openUntil;
 
 const recordFailure = (err) => {
   if (!breakerWorthyStatus(err && err.status)) return;
+  // A 403 is the "sign in to confirm you're not a bot" wall (or an innertube
+  // header requirement) — count it once per failed call so /api/ytmusic/status
+  // shows cookie expiry as a rising botCheckCount.
+  if (err && err.status === 403) recordBotCheck();
   // A missing/misconfigured binary won't recover from a cooldown — don't let
   // it open the breaker (the resolver should stay out of YouTube only on real
   // upstream throttling).
@@ -707,6 +731,21 @@ const killAllStreams = () => {
   liveChildren.clear();
 };
 
+// Operational snapshot for /api/ytmusic/status. The health signal for the free
+// cookies-first setup: when botCheckCount grows and lastBotCheckAt is recent,
+// refresh YT_COOKIES_B64 (or add YT_COOKIES) rather than touching code.
+const getStatus = () => ({
+  enabled: isEnabled(),
+  breakerOpen: isBreakerOpen(),
+  botCheckCount,
+  lastBotCheckAt,
+  cookiesConfigured: Boolean(ytConfig.cookiesPath),
+  playerClient: ytConfig.playerClient || "",
+  proxyConfigured: Boolean(ytConfig.proxyUrl),
+  activeStreams,
+  maxConcurrentStreams: ytConfig.maxConcurrentStreams,
+});
+
 module.exports = {
   YtStreamError,
   isEnabled,
@@ -720,5 +759,6 @@ module.exports = {
   playlistBrowseId,
   spawnStream,
   mapError,
+  getStatus,
   killAllStreams,
 };

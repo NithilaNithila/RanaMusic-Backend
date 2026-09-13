@@ -5,3 +5,6 @@ dev.pid
 dist/
 null
 -w
+cookies.txt
+*.zip
+.claude/

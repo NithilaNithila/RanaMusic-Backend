@@ -178,7 +178,12 @@ const forgotPassword = asyncHandler(async (req, res) => {
   try {
     await sendPasswordResetEmail({ to: email, resetToken, expiresIn: RESET_EXPIRES_IN });
   } catch (err) {
-    logger.warn({ err: { message: err.message } }, "Failed to send reset email");
+    // The uniform success response stays (account-enumeration protection), but
+    // a delivery failure must be loud at error level: in production this means
+    // the user is told "a reset link was sent" and never receives one. Mask the
+    // recipient and never log the reset token itself.
+    const masked = email.replace(/^(.{2})(.*)(@.*)$/, "$1***$3");
+    logger.error({ err: { message: err.message }, to: masked }, "Failed to send password reset email");
   }
 
   return ApiResponse.success(res, {}, "If that account exists, a reset link has been sent");

@@ -351,6 +351,52 @@ test("a missing binary maps to 502 without opening the breaker", async () => {
   assert.strictEqual(service.isBreakerOpen(), false);
 });
 
+test("getStatus surfaces cookies config and counts bot checks (cookie expiry signal)", async () => {
+  stubYtDlp(() =>
+    makeChild({
+      exitCode: 1,
+      stderr: "ERROR: Sign in to confirm you're not a bot",
+    })
+  );
+  process.env.YT_COOKIES_B64 = Buffer.from(
+    "# Netscape HTTP Cookie File\nexample.com\tTRUE\t/\tFALSE\t0\tSID\tabc123\n",
+    "utf8"
+  ).toString("base64");
+  try {
+    const service = loadService();
+
+    const before = service.getStatus();
+    assert.strictEqual(before.enabled, true);
+    assert.strictEqual(before.breakerOpen, false);
+    assert.strictEqual(before.cookiesConfigured, true);
+    assert.strictEqual(before.playerClient, "web_embedded");
+    assert.strictEqual(before.botCheckCount, 0);
+    assert.strictEqual(before.activeStreams, 0);
+
+    await assert.rejects(service.getTrackInfo("dQw4w9WgXcQ"), (err) => err.status === 403);
+    await assert.rejects(service.getTrackInfo("dQw4w9WgXcQ"), (err) => err.status === 403);
+
+    const after = service.getStatus();
+    assert.strictEqual(after.botCheckCount, 2);
+    assert.ok(after.lastBotCheckAt, "lastBotCheckAt should be set after a 403");
+  } finally {
+    delete process.env.YT_COOKIES_B64;
+    delete require.cache[SERVICE_PATH];
+    delete require.cache[CONFIG_PATH];
+  }
+});
+
+test("getStatus reports cookies absent when only YT_COOKIES_B64 is missing", async () => {
+  stubYtDlp(() => makeChild({}));
+  delete process.env.YT_COOKIES;
+  delete process.env.YT_COOKIES_B64;
+  const service = loadService();
+  assert.strictEqual(service.getStatus().cookiesConfigured, false);
+  assert.strictEqual(service.getStatus().playerClient, "");
+  delete require.cache[SERVICE_PATH];
+  delete require.cache[CONFIG_PATH];
+});
+
 test("spawnStream rejects with 429 when the concurrency cap is hit", async () => {
   const spawned = [];
   stubYtDlp((url, flags) => {

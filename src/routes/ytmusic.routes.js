@@ -7,6 +7,11 @@ const yt = require("../controllers/ytmusic.controller");
 const search = require("../controllers/ytmusic.controller").search;
 router.get("/search", asyncHandler(search));
 
+// Live health of the ytmusic provider: enabled/breaker state, cookies
+// configured, bot-check counter (grows when YT_COOKIES_B64 expires on a
+// datacenter IP). Call this before blaming streaming when playback 403s.
+router.get("/status", asyncHandler(yt.status));
+
 // In-process yt-dlp audio stream for a YouTube Music videoId. Public (the
 // client plays audio via an <audio> tag that can't attach Bearer headers), so
 // it is guarded by the global rate limiter + a stricter per-IP stream limiter

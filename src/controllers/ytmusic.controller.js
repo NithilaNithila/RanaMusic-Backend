@@ -7,7 +7,8 @@ const ytConfig = require("../config/ytmusic");
 const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
 const sendStreamError = (res, err, customStatus = 502) => {
-  // ←←← ALWAYS set CORP header even on errors ←←←
+  // Always set CORP headers, even on error responses, so the audio tag in the
+  // client is never blocked by cross-origin isolation policies.
   try {
     if (!res.headersSent) {
       res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
@@ -70,13 +71,13 @@ const stream = async (req, res) => {
     return undefined;
   }
 
-  // ←←← ADD THESE HEADERS IMMEDIATELY, BEFORE pipeline ←←←
+  // CORP/COEP headers must be set before the first flushHeaders so the audio
+  // stream is usable cross-origin from the client's <audio> element.
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
   res.setHeader("Content-Type", info.contentType);
   res.setHeader("Cache-Control", "private, max-age=3600");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  // ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
 
   res.status(200);
   res.flushHeaders();
@@ -202,9 +203,17 @@ const search = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, results, `Found ${data.total} results`);
 });
 
+// Live status of the YouTube Music integration: enabled/breaker state, whether
+// cookies are configured (the free datacenter-IP bypass), and a bot-check
+// counter so expire cookies surface as a growing count instead of silent 403s.
+const status = asyncHandler(async (req, res) => {
+  return ApiResponse.success(res, ytService.getStatus(), "YouTube Music status");
+});
+
 module.exports = {
   stream,
   search,
+  status,
   playlist,
   playlistTracks,
   album,

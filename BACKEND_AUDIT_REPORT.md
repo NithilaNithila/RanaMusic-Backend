@@ -408,3 +408,96 @@ Non-issues found (upstream limitations, no frontend impact):
 - `/api/amazon/web/playlists/:id` and `/community-playlists/:id` -> the unofficial music.amazon.* skill scraper can't fetch catalog playlists by `B0`-id; the classic `/api/amazon/playlists/:id` (what the frontend actually calls) resolves fine.
 
 Tests: 290/290 backend, lint 121 files OK. (amazonService.test.js ran slowly/flaky once in a parallel run — slow upstream access during the probe; green on re-run.)
+
+---
+
+## 22. Pass-4 Re-audit (2026-09-13)
+
+Fresh security + code-quality pass over the whole backend. Tests: **306/306** passing, lint clean, `npm audit` **0 vulnerabilities**.
+
+### CRITICAL — leaked production credentials in git history
+
+`Backend.zip` (~10.7 MB) is **tracked and pushed to `origin/main`** (commit `b5b84c4`). Verified the archive contains a full project copy including **`.env` — live `MONGO_URI` (Atlas), `JWT_SECRET`, SMTP/YT cookie config** — plus an embedded `.git/` and `backend.log`. The worktree copy was deleted, but deleting the file in a new commit does **not** remove it from history.
+
+**Required remediation (both parts):**
+1. **Rotate now** — new `JWT_SECRET` (forces all users to re-login), new MongoDB password/connection string, rotate SMTP + `YT_COOKIES*`. Treat everything in that zip as compromised.
+2. **Purge history** — `git filter-repo --invert-paths --path Backend.zip` (or BFG) + force-push. Commit the `.gitignore` `*.zip`/`cookies.txt` hardening (still uncommitted).
+
+### MEDIUM
+
+| # | Finding | Location |
+|---|---------|----------|
+| M1 | Image-proxy allowlist inconsistency + unrestricted redirects (SSRF-ish). Controller allows 11 suffix-matched hosts incl. `amazon.com`/`cdn.amazon.com`; `imageProxy.js` util allows only 3. No `maxRedirects` bound and `validateStatus: () => true` lets a redirect off a trusted host reach arbitrary destinations (incl. private ranges). Enforce `https:`, cap/validate redirects per hop, align allowlists, drop `via.placeholder.com`. | `src/controllers/imageProxy.controller.js:13-25`, `src/utils/imageProxy.js:5-12` |
+| M2 | All IP-based limiters + login lockout trust `req.ip` under `trust proxy` default 1 hop. Correct behind Render's TLS LB; spoofable if the instance is ever reachable without that proxy. Document/couple to real topology. | `src/app.js:22` |
+
+### LOW
+
+| # | Finding | Location |
+|---|---------|----------|
+| L1 | yt-dlp TLS verification disabled when `https://` proxy used (`noCheckCertificate: true`). Fine for a private-CA gateway; gate explicit-NO otherwise. | `src/config/ytmusic.js:76` |
+| L2 | Hardcoded public constants in source (JioSaavn DES key `38346591`, innertube API key `AIzaSyAO_...`). Not secrets, but breakage if providers rotate them. | `jiosaavn.service.js:2,51`, `config/ytmusic.js:116` |
+| L3 | New `/api/ytmusic/status` exposes breaker state, active/concurrent streams, cookie/proxy flags to anyone. Useful ops signal; borderline info leak. | `ytmusic.controller.js:209`, `ytmusic.service.js:737` |
+| L4 | No CAPTCHA beyond IP limits against large botnets; in-memory limiter resets on restart. v1-acceptable. | auth flow |
+| L5 | `/api/saavn/playlists/:id` maps to a batch `getPlaylists(ids)` handler — works by accident, misleading 400 message, no by-id validator. | `saavn.routes.js:27`, `saavn.controller.js:110-115` |
+| L6 | Forgot-password swallows send-email errors and returns uniform success — in prod with SMTP unset the user gets "a reset link was sent" that never arrives. Log at error level. | `auth.controller.js:178-184` |
+| L7 | Reset tokens signed with the shared `JWT_SECRET`. Latches onto C1; consider a dedicated reset secret. | `auth.controller.js:165-173` |
+
+### INFO
+- `YT_API_BASE` in `.env` has no consumer — dead config.
+- `qs@6.16.0` override is a supply-chain pin; app already avoids qs parsing (`urlencoded extended:false`).
+- `cookies.txt` now gitignored but the `.gitignore` change is **uncommitted** — commit it so the repo enforces the rule.
+- Search/stream responses expose provider CDN audio URLs — design choice; revisit if upstreams treat them as bearer-ish.
+- **Verified strong:** bcrypt cost 10 + `select:false`, HS256-only JWT with iss/aud/`v` enforcement + 60s user cache, per-user/ip rate limiters, helm/CSP/HSTS, strict CORS fail-fast, subprocess safety (no shell, strict videoId regex, concurrency cap + breaker + SIGKILL lifecycle), graceful shutdown with yt-dlp reap, provider retries honor Retry-After.
+
+### Dependencies
+`npm audit` 0 vulnerabilities. 8 major-version bumps available (bcryptjs, dotenv, express, express-rate-limit, helmet, mongoose — all non-urgent, semver-range docs in §16).
+## 23. Pass-5 Full Re-audit (2026-09-13)
+
+Full backend audit: security + architecture/reliability, two parallel reviews cross-checked against the source. Tests: **307/307** passing (35 files), lint clean, `npm audit` **0 vulnerabilities**. Working-tree secret scan: **no real credentials in source** - only `.env.example`/README placeholders and the public innertube key (`src/config/ytmusic.js:116`).
+
+### Blockers
+
+- **BA-C1 [still OPEN - see Â§22]** Live production credentials remain in git history: `Backend.zip` at HEAD (commit `b5b84c4`), pushed to `github.com/NithilaNithila/RanaMusic-Backend.git`. Rotate `JWT_SECRET`/Mongo/SMTP/`YT_COOKIES*`, then `git filter-repo --invert-paths --path Backend.zip` + force-push. Commit the `.gitignore` `*.zip`/`cookies.txt` hardening (uncommitted).
+- **BA-H1 [NEW]** No index build path in production. `src/config/db.js:12` sets `autoIndex: false` under `NODE_ENV=production`; there is no migration/index script (`package.json` has only start/dev/test/lint). The unique indexes application logic depends on (`PlaylistTrack {playlist,position}` + `{playlist,jamendoId}`, `User.email/username`, `Favorite`, `LikedSong`) are never guaranteed to exist on a prod-only cluster, so E11000-driven retry/dedupe silently degrades. Add a one-time `Model.syncIndexes()` step at deploy.
+- **BA-H2 [NEW]** Recent security fixes are uncommitted = not deployed: image-proxy shared allowlist (`src/utils/imageProxy.js`, `src/controllers/imageProxy.controller.js`), forgot-password error logging (`auth.controller.js`), ytmusic status/hardening (`ytmusic.*`), `.gitignore`. Push together with the BA-C1 remediation.
+
+### MEDIUM
+
+| # | Finding | Location |
+|---|---------|----------|
+| M1 | Error handler logs unredacted query strings on every 4xx/5xx (`path: req.originalUrl`), contradicting the request logger which masks query values (Â§22 L3). A failed `/api/tracks/search?q=<term>` writes the raw term into error logs. Apply the same `redactUrl()` before logging. | `src/middleware/error.middleware.js:84` |
+| M2 | All Amazon playback routes are unauthenticated: session create, `GET /playback/sessions/active` (dumps every live session id), and every session-state mutation (queue/current/next/loop/shuffle) forward `req.body` verbatim to the mirror. Any anonymous client that learns a session id can drive/hijack another user's playback state. Require `protect` and scope sessions to the owning user; whitelist body fields. | `src/routes/amazon.routes.js:26-41`, `src/controllers/amazonPlayback.controller.js:8-75` |
+| M3 | `/tracks/resolve` double-fetches provider artwork: `:113-138` bounded (5s, sets `needsAmazonSession`) then `:143-160` re-runs the *same* getter with **no timeout** (up to 30s for Amazon) and omits the `needsAmazonSession` flag. Worst-case miss latency doubles. Delete the duplicate unbounded block and carry the flag in both paths. | `src/controllers/track.controller.js:113-160` |
+| M4 | Pagination off-by-one: controllers resolve to **1-indexed** pages (`track.controller.js:41-45`, `album/artist` same) but the Saavn service layer is **0-indexed** (`pagination.js` `sanitizePagination`) and the JioSaavn fallback sends `p: page + 1` (`jiosaavn.service.js`). Default `page=1` therefore requests upstream **page 2** on the fallback path. Normalize at the service boundary, verify live, add a stub test. | `src/utils/pagination.js:11-14`, `src/controllers/track.controller.js:41-45`, `src/services/jiosaavn.service.js:187/194/201/235/251` |
+| M5 | Graceful shutdown does not drain in-flight requests: `server.close()` is not awaited, `closeAllConnections()` immediately drops idle sockets, and `mongoose.disconnect()` exits while requests that began before SIGTERM are still mid-flight (10s force-exit is the only real bound). Await `server.close` with a bounded drain window before disconnecting. | `src/server.js:66-108` |
+| M6 | Image proxy has no response-size bound (`maxContentLength` unset) so a large image from an allowed host streams fully into memory (OOM risk on a small instance), and its errors use `{error:...}` instead of the app-wide `ApiResponse` shape. Set a cap (~10-20 MB) and emit `ApiResponse`. | `src/controllers/imageProxy.controller.js:5-13,22-71` |
+| M7 | Password-reset token is reusable for its full 15-min lifetime: the JWT carries a `jti` claim but nothing checks/consumes it, so a leaked token can reset the password repeatedly (each call bumps `tokenVersion`, killing sessions). Store a one-time hash on the user and consume it on first use. | `src/controllers/auth.controller.js:165-173,194-223` |
+| M8 | `/tracks/resolve` is anonymous and only behind the broad global limiter (2000/15min/IP); each request can spawn in-process yt-dlp children for the YouTube backstop (7s budget) plus Saavn lookups - a subprocess-exhaustion/DoS vector. Give resolve its own limiter and/or a global resolution-time spawn cap (the streaming path already has one). | `src/routes/track.routes.js:12`, `src/controllers/track.controller.js:85`, `src/services/ytmusic.service.js:701-708` |
+
+### LOW
+
+| # | Finding | Location |
+|---|---------|----------|
+| L1 | `updateProfile` returns the full Mongoose document (internal `_id`/`__v`/`createdAt`/`updatedAt`/`tokenVersion`). Password is safe (`select:false`) but return the sanitized shape used by register/getMe. | `src/controllers/user.controller.js:41` |
+| L2 | `avatarUrl` accepts any `http(s)://` URL incl. plaintext `http://` (mixed content, tracking, client-side requests to internal hosts). Require https + public hosts, or route through the allowed proxy. | `src/controllers/user.controller.js:7,22-27` |
+| L3 | Live YouTube session cookies in plaintext at repo root (`cookies.txt`, gitignored + untracked); also funneled into `YT_COOKIES_B64`. Move outside the repo; rotate the affected Google session. | `cookies.txt` (repo root) |
+| L4 | Raw yt-dlp stderr (up to 400 chars) can surface in client-facing errors on unmapped failures - leaks internal paths/cookie file names. Return a fixed generic message; keep the snippet server-side. | `src/services/ytmusic.service.js:141-160`, `src/middleware/error.middleware.js:89-98` |
+| L5 | `X-Response-Time` header exposes request timing to clients; with the login timing side-channel it eases fingerprinting. Drop or scope to authed routes. | `src/app.js:47` |
+| L6 | Brute-force protection is per-(email,IP) in-memory only (resets on restart; distributed botnet bypasses per-account limits); bcrypt compare runs only when the account exists -> timing enumeration signal (messages uniform). Move per-account failure tracking to Mongo (bounded window). | `src/utils/loginProtection.js`, `src/controllers/auth.controller.js:61-80` |
+| L7 | Amazon-web search paging resets to page 1 when no continuity token is held -> unified search with `offset>0` shows duplicate Amazon rows. Document or surface a next-page token (behavior is test-pinned). | `src/services/amazonWeb.service.js:570-581,602-667` |
+| L8 | Playlist GETs write on read: `ensureFullAudio` fan-outs `PlaylistTrack.updateOne` + external resolves (N x 5 per playlist) inside GET responses. Move enrichment off the request path. | `src/controllers/playlist.controller.js` |
+| L9 | `getArtistAlbums` walks up to 40 upstream pages sequentially per request with no cache. Use a shared cached pool like the popular/artist-pool pattern. | `src/controllers/artist.controller.js` |
+| L10 | `searchTrack` exported by `ytmusic.service.js` has zero production callers (test-only). Remove the export or wire it into `search`. | `src/services/ytmusic.service.js:602,755` |
+| L11 | SMTP transport has no `socketTimeout`; a hung remote can stall the reset-mail path up to nodemailer's default 10 min. Set ~15s. | `src/services/email.service.js:19` |
+| L12 | `/api/saavn/search/songs` passes raw `page` (default -> 0, first page) while `/api/tracks/search` defaults to 1 - the same value means different pages depending on endpoint. Normalize at the controller boundary. | `src/controllers/saavn.controller.js` |
+
+### INFO
+
+- Â§22 M1 **resolved in the working tree**: single shared allowlist (`src/utils/imageProxy.js`), https-only, rejects IP literals, per-hop redirect re-validation capped at 4 hops.
+- Â§22 M2 (trust proxy) confirmed pinned to 1 hop - limiters cannot be spoofed behind the TLS LB.
+- Test coverage: 307 tests / 35 files, flat `test()` (`node --test`, no describe/it). **No Mongo-backed integration tests and no controller/route tests.** Top uncovered: boot + shutdown drain (M5), controller/route layer incl. resolve + image proxy + ytmusic stream pipeline, email.service, Mongo index/enforcement behavior, retry/mapLimit edges.
+- `npm outdated`: 8 majors behind (`express` 4->5, `mongoose` 8->9, `helmet` 7->8, `bcryptjs`, `dotenv`, `express-rate-limit`; patch/minor: `compression`, `nodemailer`). Non-urgent; smoke-test after upgrade.
+- `SEARCH_TTL = 600` comment says "5 min" but is 10 (`search.service.js:8`). `ECACHEFULL` eviction picks `cache.keys()[0]` (node-cache insertion order, undocumented) (`cache.service.js:25`).
+- **Verified strong:** bcrypt cost 10 + `select:false`; HS256-only JWT with iss/aud/tokenVersion revocation + 60s auth cache; global/auth/user/stream/spotify limiters + loginProtection buckets (5-min cleanup); 10kb JSON body + `extended:false` (no qs pollution); helmet/CSP/HSTS; CORS fail-fast; yt-dlp runs argv-only (no shell), strict videoId regex `^[A-Za-z0-9_-]{11}$`, breaker (5 -> 60s), stream concurrency cap, child reap on abort + shutdown; IDOR-free ownership checks on every user mutation; provider retries honor `Retry-After`.
+
+**Bottom line:** architecture and defensive coding are strong (shared cache/retry/agent layers, thundering-herd protection, clean degradation, hardened subprocess handling). Two blockers to production-ready: **BA-C1** (credentials in git history) and **BA-H1** (no production index build); **BA-H2** (uncommitted security fixes) ships with the C1 push. M1-M8 are moderate, cheap fixes; nothing else blocks.
