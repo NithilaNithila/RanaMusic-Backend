@@ -114,12 +114,26 @@ const mapError = (err) => {
   ) {
     return new YtStreamError("YouTube unreachable", 502);
   }
-  return new YtStreamError(message || "yt-dlp failed", 502);
+  return new YtStreamError(
+    snippetOf(stderr) ? `yt-dlp failed: ${snippetOf(stderr)}` : "yt-dlp failed",
+    502
+  );
 };
 
 // Only genuinely ephemeral failures are worth one retry; a resolved 404/403
 // (bot check) won't fix itself in a few hundred ms.
 const isTransient = (err) => err.status === 502 || err.status === 504 || err.status === 0 || err.status === undefined;
+
+// Last few meaningful lines of yt-dlp stderr, appended to unmapped failures so
+// the specific cause (invalid cookie file, bad binary, network quirk) surfaces
+// in the API instead of a bare "exit code 1".
+const snippetOf = (stderr) =>
+  String(stderr || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-3)
+    .join(" | ")
+    .slice(0, 400);
 
 // ──────────────────── innertube (youtubei) catalog client ────────────────────
 // Albums, playlists and artists have no yt-dlp search facet, so catalog search

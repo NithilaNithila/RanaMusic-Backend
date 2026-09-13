@@ -126,6 +126,20 @@ test("getTrackInfo maps unavailable videos to 404", async () => {
   await assert.rejects(service.getTrackInfo("dQw4w9WgXcQ"), (err) => err.status === 404);
 });
 
+test("getTrackInfo surfaces unmapped yt-dlp stderr instead of a bare exit code", async () => {
+  stubYtDlp(() =>
+    makeChild({
+      exitCode: 1,
+      stderr: "ERROR: [err] invalid cookie file\nERROR: cookies.txt has no valid cookies",
+    })
+  );
+  const service = loadService();
+  await assert.rejects(
+    service.getTrackInfo("dQw4w9WgXcQ"),
+    (err) => err.status === 502 && /invalid cookie file/.test(err.message)
+  );
+});
+
 test("searchTrack returns the first ytsearch result and caches the query", async () => {
   let calls = [];
   stubYtDlp((url, flags) => {
