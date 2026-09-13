@@ -53,6 +53,10 @@ const resolveCookiesPath = () => {
   }
 };
 
+// Cookies are the lynchpin: their presence switches streaming to the `tv`
+// client below, so resolve them once and reuse for both settings.
+const resolvedCookiesPath = resolveCookiesPath();
+
 module.exports = {
   // Kill switch: YT_ENABLED=false disables every yt-dlp call; the resolver
   // falls back to Saavn-only and /stream responds 503.
@@ -63,9 +67,14 @@ module.exports = {
   binaryPath: process.env.YTDLP_BINARY || "",
 
   // yt-dlp setup flags (defaults chosen for reliability on datacenter IPs).
-  cookiesPath: resolveCookiesPath(), // real file path (YT_COOKIES) or decoded YT_COOKIES_B64
+  cookiesPath: resolvedCookiesPath, // real file path (YT_COOKIES) or decoded YT_COOKIES_B64
   proxyUrl: process.env.YT_PROXY || "", // http(s) proxy for yt-dlp
-  playerClient: process.env.YT_PLAYER_CLIENT || "", // when set, locks youtube:player_client (used to dodge bot checks)
+  // Cookies present -> default to the `tv` client: it skips the web/mweb flow
+  // that throws "The page needs to be reloaded" on cautious IPs and returns
+  // DRM-free m4a when authenticated. Without cookies, stay unset (yt-dlp's
+  // default client chain) because `tv` would only expose DRM-locked formats.
+  playerClient:
+    process.env.YT_PLAYER_CLIENT || (resolvedCookiesPath ? "tv" : ""), // locks youtube:player_client (used to dodge bot checks)
   format: process.env.YT_FORMAT || "bestaudio[ext=m4a]/bestaudio", // audio-only; prefers AAC/MP4 so all players can decode
 
   // Hard cap on simultaneously active yt-dlp *stream* processes. Stops a

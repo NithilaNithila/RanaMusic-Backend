@@ -44,6 +44,21 @@ test("YT_COOKIES (real file path) wins over YT_COOKIES_B64", () => {
   clearEnv();
 });
 
+test("authenticated cookies switch the default player client to tv", () => {
+  clearEnv();
+  const b64 = Buffer.from(COOKIE_LINE, "utf8").toString("base64");
+  const cfg = loadConfig({ ytCookies: "", ytCookiesB64: b64 });
+  assert.strictEqual(cfg.playerClient, "tv");
+  clearEnv();
+});
+
+test("without cookies the player client stays unset", () => {
+  clearEnv();
+  const cfg = loadConfig({ ytCookies: "", ytCookiesB64: "" });
+  assert.strictEqual(cfg.playerClient, "");
+  clearEnv();
+});
+
 test("cookiesPath is empty when neither YT_COOKIES nor YT_COOKIES_B64 is set", () => {
   clearEnv();
   const cfg = loadConfig({ ytCookies: "", ytCookiesB64: "" });
