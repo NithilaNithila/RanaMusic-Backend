@@ -156,6 +156,11 @@ app.use("/api", apiLimiter);
 app.use("/api/ytmusic", ytStreamLimiter);
 app.use("/api/spotify/token", spotifyTokenLimiter);
 
+// Root route to handle Render's initial load balancer ping
+app.get("/", (req, res) => {
+  res.status(200).json({ message: "RanaMusic Backend is running successfully!" });
+});
+
 // Health check
 app.get("/health", (req, res) => {
   const dbState = mongoose.connection.readyState;
