@@ -1,6 +1,32 @@
 // In-process YouTube Music integration (yt-dlp based). No external proxy, no
 // API key: yt-dlp resolves the audio stream and the backend pipes it directly.
 // Defaults to enabled unless explicitly disabled.
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+// YouTube blocks anonymous playback from datacenter IPs ("Sign in to confirm
+// you're not a bot"), so streaming needs a logged-in cookies.txt. Stateless
+// hosts (Render free) have no place to drop a cookies file, so YT_COOKIES_B64
+// accepts the exported cookies file base64-encoded in an env var and decodes
+// it into a temp file once at boot -- no secret ever touches the repo. A real
+// file path in YT_COOKIES wins (takes precedence) when one exists.
+const resolveCookiesPath = () => {
+  const fromEnv = (process.env.YT_COOKIES || "").trim();
+  if (fromEnv) return fromEnv;
+
+  const b64 = (process.env.YT_COOKIES_B64 || "").trim();
+  if (!b64) return "";
+  try {
+    const decoded = Buffer.from(b64, "base64").toString("utf8");
+    const file = path.join(os.tmpdir(), "ranamusic-yt-cookies.txt");
+    fs.writeFileSync(file, decoded, { encoding: "utf8", mode: 0o600 });
+    return file;
+  } catch (_) {
+    return "";
+  }
+};
+
 module.exports = {
   // Kill switch: YT_ENABLED=false disables every yt-dlp call; the resolver
   // falls back to Saavn-only and /stream responds 503.
@@ -11,7 +37,7 @@ module.exports = {
   binaryPath: process.env.YTDLP_BINARY || "",
 
   // yt-dlp setup flags (defaults chosen for reliability on datacenter IPs).
-  cookiesPath: process.env.YT_COOKIES || "", // path to exports-cookies.txt
+  cookiesPath: resolveCookiesPath(), // real file path (YT_COOKIES) or decoded YT_COOKIES_B64
   proxyUrl: process.env.YT_PROXY || "", // http(s) proxy for yt-dlp
   playerClient: process.env.YT_PLAYER_CLIENT || "", // when set, locks youtube:player_client (used to dodge bot checks)
   format: process.env.YT_FORMAT || "bestaudio[ext=m4a]/bestaudio", // audio-only; prefers AAC/MP4 so all players can decode
@@ -46,4 +72,6 @@ module.exports = {
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     timeoutMs: Number(process.env.YTM_INNERTUBE_TIMEOUT || 15000),
   },
+  // Exposed for tests; returns the resolved cookie file path ("" when none).
+  __resolveCookiesPath: resolveCookiesPath,
 };

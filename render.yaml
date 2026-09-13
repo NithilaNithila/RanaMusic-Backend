@@ -34,6 +34,12 @@ services:
       # is downloaded during `npm ci`; override with YTDLP_BINARY to pin a build.
       - key: YT_ENABLED
         value: "true"
+      # YouTube blocks anonymous playback from datacenter IPs (bot check). Paste
+      # a base64-encoded cookies.txt (exported from a logged-in YouTube session)
+      # here to authenticate streaming; the backend decodes it to a temp file at
+      # boot. A YT_COOKIES file path (e.g. from persistent disk) takes precedence.
+      - key: YT_COOKIES_B64
+        sync: false
       - key: MIN_APP_VERSION
         value: "1.0.0"
       - key: LATEST_APP_VERSION
