@@ -80,7 +80,11 @@ module.exports = {
   playerClient:
     process.env.YT_PLAYER_CLIENT ||
     (resolvedCookiesPath ? "web_embedded" : ""), // locks youtube:player_client (used to dodge bot checks)
-  format: process.env.YT_FORMAT || "bestaudio[ext=m4a]/bestaudio", // audio-only; prefers AAC/MP4 so all players can decode
+  // Format selector: prefer audio-only AAC, then any audio-only, then ANY
+  // playable format. The embedded player served to cautious/datacenter IPs
+  // sometimes omits audio-only entries entirely, so the trailing /best is the
+  // escape hatch (combined video-only) that keeps the gap-fill playable.
+  format: process.env.YT_FORMAT || "bestaudio[ext=m4a]/bestaudio/best",
 
   // Hard cap on simultaneously active yt-dlp *stream* processes. Stops a
   // burst of requests from spawning unbounded subprocesses (the /stream route
