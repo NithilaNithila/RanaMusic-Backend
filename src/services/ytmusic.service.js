@@ -718,6 +718,20 @@ const spawnStream = (videoId) => {
   return child;
 };
 
+// Cached yt-dlp binary version, exposed via /api/ytmusic/status so a stale
+// binary on a hosted build (Render build cache restores old node_modules and
+// skips yt-dlp-exec's fresh-binary postinstall) is visible without SSH.
+let ytDlpVersionPromise = null;
+const getYtDlpVersion = () => {
+  if (!ytDlpVersionPromise) {
+    ytDlpVersionPromise = resolvedBinary
+      .exec("--version", {}, { timeout: 10000 })
+      .then((out) => String(out || "").trim())
+      .catch(() => "");
+  }
+  return ytDlpVersionPromise;
+};
+
 // SIGKILL every still-live stream child. Called during shutdown so a deploy /
 // restart can't leave orphaned youtube-dl processes downloading in the void.
 const killAllStreams = () => {
@@ -742,6 +756,7 @@ const getStatus = () => ({
   cookiesConfigured: Boolean(ytConfig.cookiesPath),
   playerClient: ytConfig.playerClient || "",
   proxyConfigured: Boolean(ytConfig.proxyUrl),
+  binaryVersion: null,
   activeStreams,
   maxConcurrentStreams: ytConfig.maxConcurrentStreams,
 });
@@ -760,5 +775,6 @@ module.exports = {
   spawnStream,
   mapError,
   getStatus,
+  getYtDlpVersion,
   killAllStreams,
 };

@@ -40,6 +40,16 @@ services:
       # boot. A YT_COOKIES file path (e.g. from persistent disk) takes precedence.
       - key: YT_COOKIES_B64
         sync: false
+      # YouTube serves no formats to datacenter IPs (e.g. Render AWS)
+      # even with valid cookies. Set a residential/ISP proxy URL
+      # (http://user:pass@host:port or https://...) to stream reliably.
+      # For https:// proxies, --no-check-certificate is applied automatically.
+      - key: YT_PROXY
+        sync: false
+      # Fallback lever if web_embedded gets throttled: try "tv", "web_safari",
+      # "android_vr". Leave empty to use the default (web_embedded + cookies).
+      - key: YT_PLAYER_CLIENT
+        sync: false
       - key: MIN_APP_VERSION
         value: "1.0.0"
       - key: LATEST_APP_VERSION

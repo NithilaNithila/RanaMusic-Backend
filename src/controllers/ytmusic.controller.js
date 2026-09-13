@@ -207,7 +207,9 @@ const search = asyncHandler(async (req, res) => {
 // cookies are configured (the free datacenter-IP bypass), and a bot-check
 // counter so expire cookies surface as a growing count instead of silent 403s.
 const status = asyncHandler(async (req, res) => {
-  return ApiResponse.success(res, ytService.getStatus(), "YouTube Music status");
+  const snapshot = ytService.getStatus();
+  snapshot.binaryVersion = await ytService.getYtDlpVersion();
+  return ApiResponse.success(res, snapshot, "YouTube Music status");
 });
 
 module.exports = {
