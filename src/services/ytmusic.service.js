@@ -754,7 +754,7 @@ const debugFormats = (videoId) =>
   resolvedBinary
     .exec(
       watchUrl(videoId),
-      buildFlags({ listFormats: true, noPlaylist: true, quiet: false, noWarnings: false }),
+      buildFlags({ listFormats: true, quiet: false }),
       { ...SPAWN_OPTS, timeout: 45000, killSignal: "SIGKILL" }
     )
     .then((out) => {
