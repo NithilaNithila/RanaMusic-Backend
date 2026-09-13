@@ -44,11 +44,11 @@ test("YT_COOKIES (real file path) wins over YT_COOKIES_B64", () => {
   clearEnv();
 });
 
-test("authenticated cookies switch the default player client to tv", () => {
+test("authenticated cookies switch the default player client to default,web_embedded", () => {
   clearEnv();
   const b64 = Buffer.from(COOKIE_LINE, "utf8").toString("base64");
   const cfg = loadConfig({ ytCookies: "", ytCookiesB64: b64 });
-  assert.strictEqual(cfg.playerClient, "tv");
+  assert.strictEqual(cfg.playerClient, "default,web_embedded");
   clearEnv();
 });
 

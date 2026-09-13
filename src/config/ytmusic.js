@@ -69,12 +69,14 @@ module.exports = {
   // yt-dlp setup flags (defaults chosen for reliability on datacenter IPs).
   cookiesPath: resolvedCookiesPath, // real file path (YT_COOKIES) or decoded YT_COOKIES_B64
   proxyUrl: process.env.YT_PROXY || "", // http(s) proxy for yt-dlp
-  // Cookies present -> default to the `tv` client: it skips the web/mweb flow
-  // that throws "The page needs to be reloaded" on cautious IPs and returns
-  // DRM-free m4a when authenticated. Without cookies, stay unset (yt-dlp's
-  // default client chain) because `tv` would only expose DRM-locked formats.
+  // Cookies present -> default to `default,web_embedded`. The web/mweb flow
+  // throws "The page needs to be reloaded" (JS-reload challenge) on cautious
+  // datacenter IPs, and `tv` does the same (verified locally); the embedded
+  // player flow skips that challenge and still returns DRM-free m4a. Without
+  // cookies, stay unset (yt-dlp's default chain).
   playerClient:
-    process.env.YT_PLAYER_CLIENT || (resolvedCookiesPath ? "tv" : ""), // locks youtube:player_client (used to dodge bot checks)
+    process.env.YT_PLAYER_CLIENT ||
+    (resolvedCookiesPath ? "default,web_embedded" : ""), // locks youtube:player_client (used to dodge bot checks)
   format: process.env.YT_FORMAT || "bestaudio[ext=m4a]/bestaudio", // audio-only; prefers AAC/MP4 so all players can decode
 
   // Hard cap on simultaneously active yt-dlp *stream* processes. Stops a
