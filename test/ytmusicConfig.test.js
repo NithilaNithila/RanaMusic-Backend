@@ -51,10 +51,18 @@ test("cookiesPath is empty when neither YT_COOKIES nor YT_COOKIES_B64 is set", (
   clearEnv();
 });
 
-test("garbage YT_COOKIES_B64 never crashes boot", () => {
+test("raw Netscape cookie text in YT_COOKIES_B64 is accepted as-is", () => {
+  clearEnv();
+  const cfg = loadConfig({ ytCookies: "", ytCookiesB64: COOKIE_LINE });
+  assert.ok(cfg.cookiesPath, "raw text should decode to a cookies file path");
+  assert.ok(fs.existsSync(cfg.cookiesPath), "cookies file should exist");
+  assert.ok(fs.readFileSync(cfg.cookiesPath, "utf8").startsWith("# Netscape"));
+  clearEnv();
+});
+
+test("garbage YT_COOKIES_B64 never crashes boot (falls back to no cookies)", () => {
   clearEnv();
   const cfg = loadConfig({ ytCookies: "", ytCookiesB64: "%%%not-base64%%%" });
-  assert.strictEqual(typeof cfg.cookiesPath, "string");
-  assert.ok(cfg.enabled);
+  assert.strictEqual(cfg.cookiesPath, "");
   clearEnv();
 });

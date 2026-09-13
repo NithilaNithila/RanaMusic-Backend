@@ -18,22 +18,35 @@ const looksLikeCookieFile = (text) =>
 // hosts (Render free) have no place to drop a cookies file, so YT_COOKIES_B64
 // accepts the exported cookies file base64-encoded in an env var and decodes
 // it into a temp file once at boot -- no secret ever touches the repo. A real
-// file path in YT_COOKIES wins (takes precedence) when one exists.
+// file path in YT_COOKIES wins (takes precedence) when one exists. Pasting the
+// raw cookies.txt text is tolerated (multiline env values work in Render) so a
+// missed encoding step is fixed automatically instead of failing at runtime.
 const resolveCookiesPath = () => {
   const fromEnv = (process.env.YT_COOKIES || "").trim();
   if (fromEnv) return fromEnv;
 
-  const b64 = (process.env.YT_COOKIES_B64 || "").trim();
-  if (!b64) return "";
+  const trimmed = String(process.env.YT_COOKIES_B64 || "").trim();
+  if (!trimmed) return "";
   try {
-    const decoded = Buffer.from(b64, "base64").toString("utf8");
-    if (!looksLikeCookieFile(decoded)) {
+    const asBase64 = Buffer.from(trimmed, "base64").toString("utf8");
+    const accepted = looksLikeCookieFile(asBase64)
+      ? asBase64
+      : looksLikeCookieFile(trimmed)
+        ? trimmed
+        : "";
+    if (!accepted) {
       logger.warn(
-        "YT_COOKIES_B64 decoded content does not look like a Netscape cookie file - streaming will not authenticate"
+        "YT_COOKIES_B64 did not decode to a Netscape cookie file - re-export cookies.txt and set its base64 (first line must be '# HTTP Cookie File')"
+      );
+      return "";
+    }
+    if (accepted !== asBase64) {
+      logger.warn(
+        "YT_COOKIES_B64 contained raw cookie text instead of base64 - accepted as-is"
       );
     }
     const file = path.join(os.tmpdir(), "ranamusic-yt-cookies.txt");
-    fs.writeFileSync(file, decoded, { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(file, accepted, { encoding: "utf8", mode: 0o600 });
     return file;
   } catch (_) {
     return "";
