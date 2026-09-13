@@ -358,6 +358,65 @@ test("merged resolution is stamped onto matching per-source rows", async () => {
   assert.ok(out.results.tracks.some((t) => t.audio === "https://resolved.mp3"));
 });
 
+test("source-tab rows that miss the merged page still get playable audio", async () => {
+  axiosMock.setHandler((path, config) => {
+    const query = config?.params?.query;
+    // Resolver pass for the off-page spotify rows (name + first artist).
+    if (path.includes("/search/songs") && query?.startsWith("Offscreen Song")) {
+      const row = {
+        id: "sf",
+        name: query.split(" Artist")[0],
+        artists: { primary: [{ name: "ArtistC" }] },
+        downloadUrl: [{ quality: "320kbps", url: "https://resolved-offscreen.mp3" }],
+        duration: 180,
+        image: "https://cover.jpg",
+      };
+      return Promise.resolve({ data: { data: { results: [row], total: 1 } } });
+    }
+    // Saavn provider search (the only row that fits the merged page).
+    if (path.includes("/search/songs")) {
+      return Promise.resolve({
+        data: {
+          data: {
+            results: [
+              {
+                id: "s1",
+                name: "Saavn A",
+                artists: { primary: [{ name: "ArtistA" }] },
+                downloadUrl: [{ quality: "320kbps", url: "https://saavn.mp3" }],
+                duration: 200,
+                image: "https://saavn-cover.jpg",
+              },
+            ],
+            total: 1,
+          },
+        },
+      });
+    }
+    if (path === "/search") {
+      return Promise.resolve({
+        data: {
+          results: [
+            { id: "p1", name: "Offscreen Song", artist: "ArtistC", preview_url: "https://p.scdn.co/mp3-preview/xyz" },
+            { id: "p2", name: "Offscreen Song 2", artist: "ArtistC", preview_url: "https://p.scdn.co/mp3-preview/abc" },
+          ],
+        },
+      });
+    }
+    return Promise.resolve({ data: { data: { results: [] } } });
+  });
+
+  const out = await searchService.search("q", { type: "track", limit: 1 });
+  const { tracksBySource } = out.results;
+
+  // Limit 1 -> the merged page holds only the Saavn row, yet the spotify tab
+  // rows missed by stamping are still resolved in the bounded source-list pass.
+  assert.ok(tracksBySource.spotify.length === 2);
+  for (const row of tracksBySource.spotify) {
+    assert.strictEqual(row.audio, "https://resolved-offscreen.mp3");
+  }
+});
+
 test("search tolerates upstream failures (safe wrapper returns empty)", async () => {
   axiosMock.fail(500, "boom");
   const out = await searchService.search("q", { type: "track", limit: 10 });

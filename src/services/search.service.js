@@ -344,7 +344,8 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
     // any source tab that also appeared on the merged page plays IMMEDIATELY
     // instead of a separate /tracks/resolve round-trip (which is slow on a
     // cold cache and reads as "the song won't play"). Rows the merged list
-    // didn't cover keep their original audio and resolve lazily at play time.
+    // didn't cover are resolved in a bounded pass just below so every source
+    // tab row still plays immediately.
     const audioByKey = new Map();
     for (const t of enrichedMerged) {
       const k = String(trackKey(t) || "");
@@ -360,6 +361,31 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
     for (const src of ["spotify", "ytmusic", "amazon"]) {
       bySource[src] = stampFromMerged(bySource[src]);
     }
+
+    // Source-tab rows that didn't make the merged page (limit cutoff) may
+    // still lack full-length audio — raw Spotify previews and Amazon rows have
+    // none by design. Resolve those too so every tab row plays immediately
+    // instead of deferring to /tracks/resolve at play time. Rows the merged
+    // pass already enriched short-circuit in makePlayable (full audio), and
+    // the Saavn searches behind them are warm from that pass, so a hit page
+    // costs almost nothing extra. The whole pass is deadline-bounded: a slow
+    // cold resolver falls back to the original rows rather than stalling the
+    // tab behind a bot-checked or sleeping upstream.
+    const resolveListAudio = async (rows) => {
+      if (!rows || !rows.length) return rows || [];
+      if (!rows.some((r) => !r || !r.audio || isPreviewAudioUrl(r.audio))) return rows;
+      const updated = await withDeadline(9000, mapLimit(rows, 5, makePlayable));
+      return updated || rows;
+    };
+
+    const audioResolved = await Promise.all([
+      resolveListAudio(bySource.spotify),
+      resolveListAudio(bySource.ytmusic),
+      resolveListAudio(bySource.amazon),
+    ]);
+    bySource.spotify = audioResolved[0];
+    bySource.ytmusic = audioResolved[1];
+    bySource.amazon = audioResolved[2];
 
     // Per-provider artwork fills (memoized 24 h), two arrays at a time so a
     // slow image lookup can't cascade across providers.
