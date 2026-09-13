@@ -18,6 +18,33 @@ const resolvedBinary = ytConfig.binaryPath
 
 const SPAWN_OPTS = { stdio: ["ignore", "pipe", "pipe"], windowsHide: true };
 
+// Fingerprint the configured cookies file (content hash + shape) so a hosted
+// instance's cookies can be compared against a local cookies.txt without
+// exposing secrets. Used by the gated diagnostic only.
+let cookieFingerprintCache = null;
+const cookieFingerprint = () => {
+  if (!ytConfig.cookiesPath) return { configured: false };
+  if (cookieFingerprintCache) return cookieFingerprintCache;
+  try {
+    const fs = require("node:fs");
+    const crypto = require("node:crypto");
+    const raw = fs.readFileSync(ytConfig.cookiesPath, "utf8");
+    const lines = raw.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
+    cookieFingerprintCache = {
+      configured: true,
+      sha256: crypto.createHash("sha256").update(raw).digest("hex"),
+      cookieCount: lines.length,
+      hasSid: /(?:^|\t)SID\t/.test(raw),
+      hasHsid: /(?:^|\t)HSID\t/.test(raw),
+      hasSsid: /(?:^|\t)SSID\t/.test(raw),
+      sizeBytes: raw.length,
+    };
+    return cookieFingerprintCache;
+  } catch (_) {
+    return { configured: true, sha256: "<unreadable>", cookieCount: -1 };
+  }
+};
+
 const JSON_RETRIES = 1;
 const JSON_INFO_TTL = 600; // seconds - per-video info is stable
 const SEARCH_TTL = 600;
@@ -823,7 +850,7 @@ const debugFormats = (videoId) =>
         playerClient: ytConfig.playerClient || "",
         format: ytConfig.format,
         proxyUrl: maskProxy(ytConfig.proxyUrl),
-        cookiesConfigured: Boolean(ytConfig.cookiesPath),
+        cookies: cookieFingerprint(),
         binaryPath: ytConfig.binaryPath || "packaged",
       },
     }));
