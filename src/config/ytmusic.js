@@ -4,6 +4,14 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { logger } = require("../services/logger.service");
+
+// yt-dlp accepts Netscape-style cookie dumps: first line is the `# Netscape
+// HTTP Cookie File` header, every following line is tab-separated fields.
+// Anything else (JSON, encrypted exports, truncated base64) silently fails at
+// streaming time, so sanity-check the decoded text at boot and warn early.
+const looksLikeCookieFile = (text) =>
+  /^#( Netscape)? HTTP Cookie File/i.test(String(text || "").trim().split(/\r?\n/)[0]);
 
 // YouTube blocks anonymous playback from datacenter IPs ("Sign in to confirm
 // you're not a bot"), so streaming needs a logged-in cookies.txt. Stateless
@@ -19,6 +27,11 @@ const resolveCookiesPath = () => {
   if (!b64) return "";
   try {
     const decoded = Buffer.from(b64, "base64").toString("utf8");
+    if (!looksLikeCookieFile(decoded)) {
+      logger.warn(
+        "YT_COOKIES_B64 decoded content does not look like a Netscape cookie file - streaming will not authenticate"
+      );
+    }
     const file = path.join(os.tmpdir(), "ranamusic-yt-cookies.txt");
     fs.writeFileSync(file, decoded, { encoding: "utf8", mode: 0o600 });
     return file;
