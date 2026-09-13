@@ -861,9 +861,13 @@ const debugFormats = (videoId) =>
       { ...SPAWN_OPTS, timeout: 45000, killSignal: "SIGKILL" }
     )
     .then((out) => {
-      const text = String((out && out.stdout) || "");
-      const lines = text.split("\n").filter((l) => l.trim());
-      return { ok: true, lines: lines.slice(0, 120) };
+      const outText = String((out && out.stdout) || "");
+      const errText = String((out && out.stderr) || "");
+      const outLines = outText.split("\n").filter((l) => l.trim());
+      const debugLines = errText
+        .split("\n")
+        .filter((l) => /\[(debug|Cookies|Proxy)\]|Proxy map|cookie file|Extracting cookies/i.test(l));
+      return { ok: true, lines: outLines.slice(0, 120), debug: debugLines.slice(0, 40) };
     })
     .catch((err) => {
       const msg = (err && err.stderr) || (err && err.message) || String(err);
