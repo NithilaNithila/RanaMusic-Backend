@@ -18,6 +18,28 @@ const resolvedBinary = ytConfig.binaryPath
 
 const SPAWN_OPTS = { stdio: ["ignore", "pipe", "pipe"], windowsHide: true };
 
+// Build the child env so a JS runtime (deno) needed for YouTube signature/n
+// challenge solving is on PATH. Checks, in order, a project-local deno
+// (installed by scripts/setup-deno.js postinstall), /opt/deno (Render build),
+// plus the existing PATH. Prepend matches so yt-dlp's "JS runtimes" probe
+// finds deno and stops withholding audio URLs.
+const jsRuntimeDirs = () => {
+  const pathModule = require("node:path");
+  const fsModule = require("node:fs");
+  const candidates = [
+    pathModule.join(__dirname, "..", "..", ".deno", "bin"),
+    "/opt/deno/bin",
+  ];
+  return candidates.filter((d) => fsModule.existsSync(d));
+};
+
+const spawnEnv = () => {
+  const dirs = jsRuntimeDirs();
+  if (!dirs.length) return process.env;
+  const sep = require("node:path").delimiter;
+  return { ...process.env, PATH: [...dirs, process.env.PATH].filter(Boolean).join(sep) };
+};
+
 // Fingerprint the configured cookies file (content hash + shape) so a hosted
 // instance's cookies can be compared against a local cookies.txt without
 // exposing secrets. Used by the gated diagnostic only.
@@ -594,7 +616,7 @@ const runJson = async (url, extraFlags = {}) => {
     const child = resolvedBinary.exec(
       url,
       buildFlags({ ...extraFlags, dumpSingleJson: true }),
-      { ...SPAWN_OPTS, timeout: ytConfig.infoTimeoutMs, killSignal: "SIGKILL" }
+      { ...SPAWN_OPTS, timeout: ytConfig.infoTimeoutMs, killSignal: "SIGKILL", env: spawnEnv() }
     );
     return collect(child);
   };
@@ -756,7 +778,7 @@ const spawnStream = (videoId) => {
   const child = resolvedBinary.exec(
     watchUrl(videoId),
     buildFlags({ output: "-", format: ytConfig.format }),
-    SPAWN_OPTS
+    { ...SPAWN_OPTS, env: spawnEnv() }
   );
   activeStreams += 1;
   liveChildren.add(child);
@@ -858,7 +880,7 @@ const debugFormats = (videoId) =>
     .exec(
       watchUrl(videoId),
       buildFlags({ listFormats: true, quiet: false, verbose: true }),
-      { ...SPAWN_OPTS, timeout: 45000, killSignal: "SIGKILL" }
+      { ...SPAWN_OPTS, timeout: 45000, killSignal: "SIGKILL", env: spawnEnv() }
     )
     .then((out) => {
       const outText = String((out && out.stdout) || "");

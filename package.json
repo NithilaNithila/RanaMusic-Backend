@@ -11,7 +11,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "node --test",
-    "lint:check": "node scripts/lint-check.js"
+    "lint:check": "node scripts/lint-check.js",
+    "postinstall": "node scripts/setup-deno.js"
   },
   "dependencies": {
     "axios": "^1.7.2",

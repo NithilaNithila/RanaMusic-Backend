@@ -6,8 +6,11 @@ services:
     name: music-backend
     runtime: node
     plan: free
-    buildCommand: npm ci
-    startCommand: npm start
+    buildCommand: npm ci && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/opt/deno sh
+    # yt-dlp needs a JavaScript runtime (deno) to solve YouTube's signature + n
+    # challenges; without one every audio URL is withheld. Install at build so it
+    # persists, then put it on PATH at start.
+    startCommand: bash -lc 'export PATH="/opt/deno/bin:$PATH" && npm start'
     healthCheckPath: /health
     autoDeploy: true
     envVars:
