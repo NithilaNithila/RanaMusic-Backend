@@ -38,6 +38,9 @@ const resolveTracksAudio = async (tracks) => {
       if (resolved.audioUrl && resolved.audioUrl !== track.audio) {
         return { ...track, audio: resolved.audioUrl, duration: resolved.duration || track.duration };
       }
+      if (resolved.videoId) {
+        return { ...track, videoId: resolved.videoId };
+      }
     } catch (_) {}
     return track;
   });

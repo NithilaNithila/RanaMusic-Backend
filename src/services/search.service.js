@@ -217,7 +217,7 @@ const makePlayable = async (track, opts = {}) => {
   // tracks need the Saavn/YT fallback here.
   if (track.audio && !isPreviewAudioUrl(track.audio)) return track;
   const resolver = opts.saavnOnly ? resolveSaavnOnly : resolvePlayableAudio;
-  const { audioUrl, duration } = await resolver({
+  const { audioUrl, duration, videoId } = await resolver({
     name: track.name,
     artist: track.artist_name,
     audioUrl: track.audio,
@@ -226,7 +226,7 @@ const makePlayable = async (track, opts = {}) => {
     id: track.id,
   });
   if (track.audio === audioUrl && track.duration === duration) return track;
-  return { ...track, audio: audioUrl, duration };
+  return { ...track, audio: audioUrl, duration, ...(videoId ? { videoId } : {}) };
 };
 
 // Ensures every returned track (and every song inside album/playlist rows)

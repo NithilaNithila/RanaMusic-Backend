@@ -26,6 +26,10 @@ const playlistTrackSchema = new mongoose.Schema(
     artistName: String,
     albumImage: String,
     audioUrl: String,
+    // Source + YouTube videoId let playlist tracks fall back to a client-side
+    // YouTube embed when no Saavn copy exists (same contract as search rows).
+    source: String,
+    videoId: String,
     duration: Number,
   },
   { timestamps: true }

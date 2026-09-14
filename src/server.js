@@ -110,6 +110,9 @@ const start = async () => {
 // (Render/PM2) restarts the process, so fail fast and let it be restarted.
 const fatal = (label, err) => {
   logger.fatal({ label, err: { message: err?.message, stack: err?.stack, raw: String(err) } }, label);
+  // In-flight keep-alive requests can wedge `close()` (Node waits up to the
+  // keep-alive timeout); force-tear connections so the exit isn't delayed.
+  server?.closeAllConnections?.();
   server?.close(() => {
     mongoose.disconnect().then(() => process.exit(1)).catch(() => process.exit(1));
   });

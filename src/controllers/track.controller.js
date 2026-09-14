@@ -149,28 +149,6 @@ const resolveTrack = asyncHandler(async (req, res) => {
     }
   }
 
-  // If we have source + id, try one last provider artwork fetch (best-effort,
-  // never throws, never blocks). If it returns image data, use it; otherwise
-  // cache as miss so repeated calls don't replay the same slow lookups.
-  if (source && id) {
-    try {
-      const getter = {
-        spotify: () => spotifyService.getTrackById(id).catch(() => null),
-        amazon: () => amazonService.getTrackById(id).catch(() => null),
-      }[String(source).toLowerCase()];
-      if (getter) {
-        const providerTrack = await getter();
-        if (providerTrack && providerTrack.image) {
-          const payload = { image: providerTrack.image };
-          setCache(cacheKey, payload, RESOLVE_TTL);
-          return ApiResponse.success(res, payload, "Resolved provider artwork");
-        }
-      }
-    } catch (_) {
-      // best-effort only — never throw into the resolve endpoint
-    }
-  }
-
   // No playable copy and no artwork — remember the miss so repeated requests
   // for the same unresolvable track don't replay the whole slow search chain.
   setCache(cacheKey, { notFound: true }, RESOLVE_MISS_TTL);

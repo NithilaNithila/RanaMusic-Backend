@@ -19,6 +19,8 @@ const normalizeTracks = (tracks = []) =>
     artist_name: t.artistName,
     image: t.albumImage,
     audio: t.audioUrl,
+    source: t.source || "",
+    videoId: t.videoId || "",
     duration: t.duration,
   }));
 
@@ -30,16 +32,24 @@ const ensureFullAudio = async (tracks = []) => {
   if (!needsResolution.length) return tracks;
 
   const resolved = await mapLimit(needsResolution, 5, async (t) => {
-    const { audioUrl, duration } = await resolvePlayableAudio({
+    const { audioUrl, duration, videoId } = await resolvePlayableAudio({
       name: t.name,
       artist: t.artistName,
       audioUrl: t.audioUrl,
       duration: t.duration,
+      source: t.source,
+      id: t.jamendoId,
     });
+    const patch = {};
     if (audioUrl !== t.audioUrl || duration !== t.duration) {
-      await PlaylistTrack.updateOne({ _id: t._id }, { audioUrl, duration });
+      patch.audioUrl = audioUrl;
+      patch.duration = duration;
     }
-    return { ...t, audioUrl, duration };
+    if (videoId && videoId !== t.videoId) patch.videoId = videoId;
+    if (Object.keys(patch).length) {
+      await PlaylistTrack.updateOne({ _id: t._id }, { $set: patch });
+    }
+    return { ...t, ...patch };
   });
 
   const byId = new Map(resolved.map((t) => [String(t._id), t]));
@@ -341,7 +351,7 @@ const addTrackToPlaylist = asyncHandler(async (req, res) => {
     return ApiResponse.error(res, "Not authorized", 403);
   }
 
-  const { jamendoId, name, artistName, albumImage, audioUrl, duration } =
+  const { jamendoId, name, artistName, albumImage, audioUrl, duration, source, videoId } =
     req.body;
   if (!jamendoId) return ApiResponse.error(res, "jamendoId is required", 400);
 
@@ -358,6 +368,8 @@ const addTrackToPlaylist = asyncHandler(async (req, res) => {
     artist: artistName,
     audioUrl,
     duration,
+    source,
+    id: jamendoId,
   });
 
   const isDupKey = (err) => err && (err.code === 11000 || /E11000/i.test(String(err?.message || "")));
@@ -393,6 +405,12 @@ const addTrackToPlaylist = asyncHandler(async (req, res) => {
             albumImage,
             audioUrl: playable.audioUrl,
             duration: playable.duration,
+            source: source || "",
+            videoId:
+              playable.videoId ||
+              (source === "ytmusic" ? String(jamendoId) : "") ||
+              videoId ||
+              "",
           },
         ],
         session ? { session } : {}

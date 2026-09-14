@@ -401,7 +401,7 @@ const cleanImageUrl = (url) => {
     }
     return toProxyUrl(u);
   }
-  return toProxyUrl(String(url).replace(/(\/I\/[A-Za-z0-9-]+).*?(\.[^.]+)$/, "$1$2"));
+  return toProxyUrl(String(url).replace(/(\/I\/[A-Za-z0-9+_-]+).*?(\.[^.]+)$/, "$1$2"));
 };
 
 const cleanSongTitle = (title) => String(title || "").replace(/^\d+\.\s*/, "");
@@ -556,6 +556,9 @@ const resolveTracksAudio = async (tracks) => {
       });
       if (resolved.audioUrl && resolved.audioUrl !== track.audio) {
         return { ...track, audio: resolved.audioUrl, duration: resolved.duration || track.duration };
+      }
+      if (resolved.videoId) {
+        return { ...track, videoId: resolved.videoId };
       }
     } catch (_) {}
     return track;
