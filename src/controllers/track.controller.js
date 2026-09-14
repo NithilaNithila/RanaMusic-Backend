@@ -108,6 +108,18 @@ const resolveTrack = asyncHandler(async (req, res) => {
     return ApiResponse.success(res, payload, "Resolved playable track");
   }
 
+  // No free playable copy, but YouTube Music has the song: hand the client the
+  // videoId so it can embed youtube.com/embed/<videoId> client-side.
+  if (resolved && resolved.videoId) {
+    const payload = {
+      videoId: resolved.videoId,
+      image: resolved.image || "",
+      needsYoutubeEmbed: true,
+    };
+    setCache(cacheKey, payload, RESOLVE_TTL);
+    return ApiResponse.success(res, payload, "Resolved YouTube embed track");
+  }
+
   // No full copy — return the provider's own artwork so the row still
   // shows a real cover.
   if (source && id) {

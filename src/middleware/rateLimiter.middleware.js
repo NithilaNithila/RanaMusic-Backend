@@ -27,22 +27,6 @@ const authLimiter = rateLimit({
   },
 });
 
-// Optional Amazon/YT streaming proxy use is heavy by nature — the limiter
-// counts one token per request at request start (NOT per streaming byte), so
-// long audio responses are safe. This is tighter than the global limiter
-// because each hit spawns a subprocess on our side.
-const ytStreamLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 600, // ~40 streams/min per client
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => `ytstream:ip:${req.ip}`,
-  message: {
-    success: false,
-    message: "Too many stream requests, please try again later.",
-  },
-});
-
 // The Spotify /token endpoint is anonymous (the client needs a live Bearer
 // token to call Spotify's API directly) and expensive-ish. It only needs to be
 // fetched once an hour per client (tokens cache downstream), so a tight
@@ -87,4 +71,4 @@ const userDataLimiter = rateLimit({
   },
 });
 
-module.exports = { apiLimiter, authLimiter, userDataLimiter, ytStreamLimiter, spotifyTokenLimiter, keyGenerator };
+module.exports = { apiLimiter, authLimiter, userDataLimiter, spotifyTokenLimiter, keyGenerator };

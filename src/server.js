@@ -73,15 +73,7 @@ const start = async () => {
       logger.info("HTTP server closed");
     });
 
-    // Reap any yt-dlp stream children that a client abandoned mid-play; they
-    // would otherwise keep downloading into the void after the process exits.
-    try {
-      require("./services/ytmusic.service").killAllStreams();
-    } catch (err) {
-      logger.error({ err: { message: err?.message } }, "failed to kill yt-dlp stream children");
-    }
-
-    // Force-terminate remaining open keep-alive connections so the process
+// Force-terminate remaining open keep-alive connections so the process
     // doesn't hang waiting for idle clients.
     if (typeof server.closeAllConnections === "function") {
       server.closeAllConnections();

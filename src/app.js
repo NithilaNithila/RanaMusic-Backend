@@ -5,7 +5,7 @@ const helmet = require("helmet");
 const mongoose = require("mongoose");
 
 const routes = require("./routes/index");
-const { apiLimiter, ytStreamLimiter, spotifyTokenLimiter } = require("./middleware/rateLimiter.middleware");
+const { apiLimiter, spotifyTokenLimiter } = require("./middleware/rateLimiter.middleware");
 const { notFound, errorHandler } = require("./middleware/error.middleware");
 const { requestLogger, redactUrl } = require("./middleware/requestLogger.middleware");
 const { logger } = require("./services/logger.service");
@@ -149,11 +149,8 @@ app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 
 // Rate limiting. The global limiter applies to every /api request (streaming
 // included — express-rate-limit counts once at request start, so long audio
-// responses are safe). /ytmusic additionally gets a tighter limiter because
-// every hit spawns a yt-dlp subprocess; a per-instance concurrency cap inside
-// ytmusic.service bounds spawned processes regardless of limiter state.
+// responses are safe).
 app.use("/api", apiLimiter);
-app.use("/api/ytmusic", ytStreamLimiter);
 app.use("/api/spotify/token", spotifyTokenLimiter);
 
 // Root route to handle Render's initial load balancer ping
@@ -180,8 +177,6 @@ app.get("/api", (req, res) => {
       search: "/api/search?q=...",
       auth: "/api/auth/me (requires auth)",
       saavn: "/api/saavn/search?q=...",
-      ytmusic: "/api/ytmusic/search?q=...",
-      ytmusic_stream: "/api/ytmusic/songs/:id/stream",
       playlists: "/api/playlists",
       albums: "/api/albums",
       artists: "/api/artists",

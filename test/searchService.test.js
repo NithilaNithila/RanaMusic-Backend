@@ -2,7 +2,6 @@ const { test, afterEach, beforeEach } = require("node:test");
 const assert = require("node:assert");
 const axiosMock = require("./helpers/mockAxios");
 const { cache } = require("../src/services/cache.service");
-const ytService = require("../src/services/ytmusic.service");
 
 let searchService;
 
@@ -11,13 +10,6 @@ beforeEach(() => {
   axiosMock.reset();
   axiosMock.install();
   searchService = axiosMock.fresh("../src/services/search.service");
-  // The ytmusic provider runs an in-process yt-dlp binary; it must not spawn
-  // during fast unit tests. Default it to an empty stub — provider-specific
-  // tests swap in their own fake.
-  ytService.search = async (query, opts = {}) => ({
-    total: 0,
-    results: { track: [], album: [], artist: [], playlist: [] },
-  });
 });
 
 afterEach(() => {
@@ -192,7 +184,7 @@ test("search fills in playable audio for non-Saavn tracks", async () => {
   assert.strictEqual(saavn.audio, "https://saavn.mp3");
 });
 
-test("empty spotify/amazon/ytmusic sources fall back to Saavn rows (tagged fallbackOf)", async () => {
+test("empty spotify/amazon sources fall back to Saavn rows (tagged fallbackOf)", async () => {
   axiosMock.setHandler((path) => {
     if (path.includes("/search/songs")) {
       return Promise.resolve({
@@ -221,10 +213,6 @@ test("empty spotify/amazon/ytmusic sources fall back to Saavn rows (tagged fallb
   assert.ok(tracksBySource.spotify.every((t) => t.source === "saavn"));
   assert.ok(tracksBySource.spotify.every((t) => t.fallbackOf === "spotify"));
 
-  // YouTube Music returned nothing -> its group is filled the same way.
-  assert.ok(Array.isArray(tracksBySource.ytmusic) && tracksBySource.ytmusic.length === 2);
-  assert.ok(tracksBySource.ytmusic.every((t) => t.fallbackOf === "ytmusic"));
-
   // Amazon returned nothing -> its group is filled the same way.
   assert.ok(Array.isArray(tracksBySource.amazon) && tracksBySource.amazon.length === 2);
   assert.ok(tracksBySource.amazon.every((t) => t.fallbackOf === "amazon"));
@@ -237,7 +225,7 @@ test("empty spotify/amazon/ytmusic sources fall back to Saavn rows (tagged fallb
   assert.ok(out.results.tracks.length >= 2);
 });
 
-test("spotify/amazon/ytmusic fallback does not trigger when Saavn itself is empty", async () => {
+test("spotify/amazon fallback does not trigger when Saavn itself is empty", async () => {
   axiosMock.setHandler((path) => {
     if (path.includes("/search/songs")) {
       return Promise.resolve({ data: { data: { results: [], total: 0 } } });
@@ -247,66 +235,8 @@ test("spotify/amazon/ytmusic fallback does not trigger when Saavn itself is empt
 
   const out = await searchService.search("q", { type: "track", limit: 10 });
   assert.deepStrictEqual(out.results.tracksBySource.spotify, []);
-  assert.deepStrictEqual(out.results.tracksBySource.ytmusic, []);
   assert.deepStrictEqual(out.results.tracksBySource.amazon, []);
   assert.deepStrictEqual(out.results.tracks, []);
-});
-
-test("ytmusic rows appear in their own group and the merged list", async () => {
-  ytService.search = async (query, opts = {}) => {
-    const type = opts.type === "track" ? "track" : "album";
-    return {
-      total: 1,
-      results: {
-        [type]: [
-          {
-            id: "aBcDeFgHiJk",
-            name: "YT Song",
-            artist_name: "YT Artist",
-            source: "ytmusic",
-            image: "https://i.ytimg.com/yt.jpg",
-            audio: "/api/ytmusic/songs/aBcDeFgHiJk/stream",
-            duration: 210,
-          },
-        ],
-      },
-    };
-  };
-  axiosMock.setHandler((path) => {
-    if (path.includes("/search/songs")) {
-      return Promise.resolve({
-        data: {
-          data: {
-            results: [
-              {
-                id: "s1",
-                name: "Saavn Song",
-                artists: { primary: [{ name: "Artist" }] },
-                downloadUrl: [{ quality: "320kbps", url: "https://saavn.mp3" }],
-                duration: 200,
-                image: "https://saavn-cover.jpg",
-              },
-            ],
-            total: 1,
-          },
-        },
-      });
-    }
-    return Promise.resolve({ data: { results: [] } });
-  });
-
-  const out = await searchService.search("q", { type: "track", limit: 10 });
-  const { tracksBySource } = out.results;
-
-  assert.strictEqual(tracksBySource.ytmusic.length, 1);
-  assert.strictEqual(tracksBySource.ytmusic[0].source, "ytmusic");
-  assert.strictEqual(
-    tracksBySource.ytmusic[0].audio,
-    "/api/ytmusic/songs/aBcDeFgHiJk/stream"
-  );
-
-  const inMerged = out.results.tracks.some((t) => t.source === "ytmusic");
-  assert.ok(inMerged, "ytmusic rows should be part of the merged track list");
 });
 
 test("merged resolution is stamped onto matching per-source rows", async () => {

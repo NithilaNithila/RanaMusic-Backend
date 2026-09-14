@@ -108,26 +108,6 @@ albums/playlists/artist top-tracks — are streamable.
 
 Disable globally with `AMZN_WEB_ENABLED=false` (see `.env.example`).
 
-### YouTube Music (streaming gap-fill, in-process yt-dlp)
-Used only when Saavn has no full-length copy — Saavn is resolved first, so about
-80% of plays never touch YouTube. No API key, no external proxy: the backend
-spawns the `yt-dlp` binary that ships in `node_modules/yt-dlp-exec` (installed
-during `npm install`; override with `YTDLP_BINARY`).
-
-- `GET /api/ytmusic/songs/:id/stream` — pipes a music.youtube.com video's audio
-  (two processes on first play — one `-J` info probe for content-type/duration,
-  then `-o -` audio; from then on the info probe is cached for 10 min). Returns
-  `audio/mp4` or `audio/webm`.
-
-Errors are mapped: bot-checks → `403`, unavailable/private → `404`, throttling →
-`429`/`502`, disabled/broken-circuit → `503`. A circuit breaker opens after
-`YT_BREAKER_THRESHOLD` consecutive upstream failures (403/429/502/503) and stays
-open for `YT_BREAKER_COOLDOWN` ms so recurring YouTube throttling can never take
-the stream route down. Kill-switch: `YT_ENABLED=false`.
-
-See `.env.example` for all `YT_*` options (`YT_COOKIES`, `YT_PROXY`,
-`YT_PLAYER_CLIENT`, `YT_FORMAT`, timeouts).
-
 ### Playlists (requires auth)
 - `GET    /api/playlists`
 - `POST   /api/playlists`
@@ -161,5 +141,5 @@ See `.env.example` for all `YT_*` options (`YT_COOKIES`, `YT_PROXY`,
   point your `<audio>` tag at it directly from the frontend instead of proxying
   audio bytes through this server.
 - When Saavn only returns a 30s preview, `services/trackResolver.service.js`
-  falls back to a `/api/ytmusic/songs/:id/stream` URL (full-length) before ever
-  letting a 30s preview reach the client.
+  falls back to the full-length Saavn CDN copy (`/tracks/resolve`, resolved at
+  play time) before ever letting a 30s preview reach the client.

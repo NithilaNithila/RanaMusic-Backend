@@ -4,28 +4,9 @@ const axiosMock = require("./helpers/mockAxios");
 
 let amazonWeb;
 
-// amazonWeb imports trackResolver → ytmusic.service, which would spawn live
-// yt-dlp in tests (network + nondeterministic). Stub it disabled so resolution
-// keeps its original values and tests stay deterministic.
-const YT_SERVICE = require.resolve("../src/services/ytmusic.service");
-const installYtDisabled = () => {
-  delete require.cache[YT_SERVICE];
-  require.cache[YT_SERVICE] = {
-    id: YT_SERVICE,
-    filename: YT_SERVICE,
-    loaded: true,
-    exports: {
-      isEnabled: () => false,
-      isBreakerOpen: () => false,
-      searchTrack: async () => null,
-    },
-  };
-};
-
 beforeEach(() => {
   axiosMock.reset();
   axiosMock.install();
-  installYtDisabled();
   amazonWeb = axiosMock.fresh("../src/services/amazonWeb.service");
 });
 

@@ -6,7 +6,7 @@ const spotifyService = require("../services/spotify.service");
 const saavnService = require("../services/saavn.service");
 const mapLimit = require("../utils/mapLimit");
 // Full-length audio pipeline shared with the unified search and the Amazon
-// endpoints: Saavn CDN first, YouTube Music stream as the backstop.
+// endpoints.
 const { enrichPlayable } = require("../services/search.service");
 
 // JioSaavn exposes real artwork + playable audio, which Spotify's open proxy
@@ -137,7 +137,7 @@ const getAlbumTracks = asyncHandler(async (req, res) => {
   if (cached) return ApiResponse.success(res, cached);
 
   // Spotify songs ship as 30s previews; replace them with a full-length copy
-  // (Saavn CDN, YouTube Music backstop) so album songs stream end to end.
+  // so album songs stream end to end.
   const songs = await enrichPlayable(album.songs || [], "track");
   setCache(cacheKey, songs, ENRICH_TTL);
   return ApiResponse.success(res, songs);
@@ -185,7 +185,7 @@ const getPlaylistTracks = asyncHandler(async (req, res) => {
   // Spotify songs ship as 30s previews. The Saavn merge below fills
   // image + audio for image-less songs; tracks that already carry an image
   // keep their preview, so a second enrichPlayable pass resolves any
-  // remaining preview/empty audio (Saavn CDN, YouTube Music backstop).
+  // remaining preview/empty audio.
   const songs = await enrichPlayable(await enrichSpotifyTracks(playlist.songs || []), "track");
   setCache(cacheKey, songs, ENRICH_TTL);
   return ApiResponse.success(res, songs);

@@ -5,59 +5,13 @@ const { cache } = require("../src/services/cache.service");
 
 let resolver;
 
-// The resolver pulls in the real ytmusic.service, which would spawn yt-dlp in
-// tests. Stub it (default: disabled) so Saavn-only behavior is the baseline,
-// then flip per-test to exercise the YouTube gap-fill.
-const SERVICE_PATH = require.resolve("../src/services/ytmusic.service");
-const RESOLVER_PATH = require.resolve("../src/services/trackResolver.service");
-const ytStub = {
-  _enabled: false,
-  _breaker: false,
-  _rows: [],
-  _lastQuery: null,
-  calls: { search: 0 },
-  isEnabled: () => ytStub._enabled,
-  isBreakerOpen: () => ytStub._breaker,
-  search: async (query) => {
-    ytStub.calls.search += 1;
-    ytStub._lastQuery = query;
-    return { total: ytStub._rows.length, results: { track: ytStub._rows } };
-  },
-};
-
-// Builds a normalized ytmusic row the way ytmusic.service.search returns them.
-const ytRow = (id, name, { artist = "", duration = 200, image = "" } = {}) => ({
-  id,
-  name,
-  artist_name: artist,
-  image,
-  audio: `/api/ytmusic/songs/${id}/stream`,
-  duration,
-});
-
-const installYtStub = () => {
-  delete require.cache[SERVICE_PATH];
-  require.cache[SERVICE_PATH] = {
-    id: SERVICE_PATH,
-    filename: SERVICE_PATH,
-    loaded: true,
-    exports: ytStub,
-  };
-};
-
 beforeEach(() => {
   cache.flushAll();
   axiosMock.reset();
   axiosMock.install();
-  ytStub._enabled = false;
-  ytStub._breaker = false;
-  ytStub._rows = [];
-  ytStub._lastQuery = null;
-  ytStub.calls.search = 0;
-  installYtStub();
   // Load saavn first so the mock axios client is shared, then resolver.
   axiosMock.fresh("../src/services/saavn.service");
-  delete require.cache[RESOLVER_PATH];
+  delete require.cache[require.resolve("../src/services/trackResolver.service")];
   resolver = require("../src/services/trackResolver.service");
 });
 
@@ -89,13 +43,6 @@ test("isPreviewAudioUrl flags empty, missing, and p.scdn.co urls", () => {
   );
   assert.strictEqual(
     resolver.isPreviewAudioUrl("https://cdn.example/full.mp3"),
-    false
-  );
-});
-
-test("isPreviewAudioUrl treats a ytmusic stream url as already playable", () => {
-  assert.strictEqual(
-    resolver.isPreviewAudioUrl("/api/ytmusic/songs/dQw4w9WgXcQ/stream"),
     false
   );
 });
@@ -230,72 +177,7 @@ test("resolvePlayableAudio keeps the original when no full copy exists", async (
   assert.strictEqual(out.duration, 150);
 });
 
-test("resolvePlayableAudio uses Saavn first and never searches YouTube when Saavn matches", async () => {
-  ytStub._enabled = true;
-  ytStub._rows = [ytRow("dQw4w9WgXcQ", "Vaathi Coming", { artist: "Anirudh" })];
-  axiosMock.setHandler(() => Promise.resolve({ data: { data: songData } }));
-  const out = await resolver.resolvePlayableAudio({
-    name: "Vaathi Coming",
-    artist: "Anirudh",
-    audioUrl: "https://p.scdn.co/mp3-preview/xyz",
-    duration: 212,
-  });
-  assert.strictEqual(out.audioUrl, "https://cdn.example/full.mp3");
-  assert.strictEqual(ytStub.calls.search, 0);
-});
-
-test("resolvePlayableAudio falls back to a YouTube stream when Saavn misses", async () => {
-  ytStub._enabled = true;
-  ytStub._rows = [
-    ytRow("dQw4w9WgXcQ", "Some Obscure Track", {
-      artist: "Nobody",
-      image: "https://i.ytimg.com/x.jpg",
-    }),
-  ];
-  axiosMock.respond({ data: { results: [] } });
-  const out = await resolver.resolvePlayableAudio({
-    name: "Some Obscure Track",
-    artist: "Nobody",
-    audioUrl: "https://p.scdn.co/mp3-preview/xyz",
-    duration: 150,
-  });
-  assert.strictEqual(out.audioUrl, "/api/ytmusic/songs/dQw4w9WgXcQ/stream");
-  assert.strictEqual(out.duration, 200);
-  assert.strictEqual(ytStub.calls.search, 1);
-});
-
-test("resolvePlayableAudio skips YouTube when the breaker is open", async () => {
-  ytStub._enabled = true;
-  ytStub._breaker = true;
-  ytStub._rows = [ytRow("dQw4w9WgXcQ", "Some Obscure Track", { artist: "Nobody" })];
-  axiosMock.respond({ data: { results: [] } });
-  const out = await resolver.resolvePlayableAudio({
-    name: "Some Obscure Track",
-    artist: "Nobody",
-    audioUrl: "https://p.scdn.co/mp3-preview/xyz",
-    duration: 150,
-  });
-  assert.strictEqual(out.audioUrl, "https://p.scdn.co/mp3-preview/xyz");
-  assert.strictEqual(ytStub.calls.search, 0);
-});
-
-test("resolvePlayableAudio keeps the original when YouTube finds nothing", async () => {
-  ytStub._enabled = true;
-  ytStub._rows = [];
-  axiosMock.respond({ data: { results: [] } });
-  const out = await resolver.resolvePlayableAudio({
-    name: "Some Obscure Track",
-    artist: "Nobody",
-    audioUrl: "https://p.scdn.co/mp3-preview/xyz",
-    duration: 150,
-  });
-  assert.strictEqual(out.audioUrl, "https://p.scdn.co/mp3-preview/xyz");
-  assert.strictEqual(ytStub.calls.search, 1);
-});
-
-test("resolveSaavnOnly resolves a preview from Saavn and never spawns YouTube", async () => {
-  ytStub._enabled = true;
-  ytStub._rows = [ytRow("dQw4w9WgXcQ", "Vaathi Coming", { artist: "Anirudh" })];
+test("resolveSaavnOnly resolves a preview from Saavn", async () => {
   axiosMock.setHandler((path) => {
     assert.match(path, /search\/songs/);
     return Promise.resolve({ data: { data: songData } });
@@ -307,12 +189,9 @@ test("resolveSaavnOnly resolves a preview from Saavn and never spawns YouTube", 
     duration: 150,
   });
   assert.strictEqual(out.audioUrl, "https://cdn.example/full.mp3");
-  assert.strictEqual(ytStub.calls.search, 0);
 });
 
-test("resolveSaavnOnly keeps the original when Saavn misses (no YouTube fallback)", async () => {
-  ytStub._enabled = true;
-  ytStub._rows = [ytRow("dQw4w9WgXcQ", "Some Obscure Track", { artist: "Nobody" })];
+test("resolveSaavnOnly keeps the original when Saavn misses", async () => {
   axiosMock.respond({ data: { results: [] } });
   const out = await resolver.resolveSaavnOnly({
     name: "Unfindable Track",
@@ -321,47 +200,5 @@ test("resolveSaavnOnly keeps the original when Saavn misses (no YouTube fallback
     duration: 150,
   });
   assert.strictEqual(out.audioUrl, "https://p.scdn.co/mp3-preview/xyz");
-  assert.strictEqual(ytStub.calls.search, 0);
-});
-
-test("findYtFullTrack rejects a mismatched title from YouTube Music", async () => {
-  ytStub._enabled = true;
-  ytStub._rows = [ytRow("dQw4w9WgXcQ", "Completely Different Song", { artist: "Nobody" })];
-  const out = await resolver.findYtFullTrack({ name: "Some Obscure Track", artist: "Nobody" });
-  assert.strictEqual(out, null);
-});
-
-// Regression for the reported "Rathinamo - Female Version" case: ytsearch1
-// returns the BASE version first, so the old single-hit backstop rejected it
-// and left the track unplayable. The multi-hit scorer must find the right
-// version one result down and keep the base version only as a lower-ranked
-// candidate.
-test("findYtFullTrack picks the versioned hit when the base version ranks first", async () => {
-  ytStub._enabled = true;
-  ytStub._rows = [
-    ytRow("baseVid", "Saurav Srisan - Rathinamo (Official Lyric Video)", { artist: "Saurav Srisan" }),
-    ytRow("femaleVid", "Rathinamo (feat. Tanisha Gnanavel) (Female Version)", {
-      artist: "Saurav Srisan",
-      duration: 190,
-    }),
-  ];
-  const out = await resolver.findYtFullTrack({
-    name: "Rathinamo - Female Version",
-    artist: "Saurav Srisan, Tanisha Gnanavel",
-  });
-  assert.strictEqual(out.audioUrl, "/api/ytmusic/songs/femaleVid/stream");
-  assert.strictEqual(out.duration, 190);
-  assert.match(ytStub._lastQuery, /Rathinamo/);
-});
-
-test("findYtFullTrack returns the base hit when no versioned copy exists", async () => {
-  ytStub._enabled = true;
-  ytStub._rows = [
-    ytRow("baseVid", "Saurav Srisan - Rathinamo (Official Lyric Video)", { artist: "Saurav Srisan", duration: 190 }),
-  ];
-  const out = await resolver.findYtFullTrack({
-    name: "Rathinamo",
-    artist: "Saurav Srisan",
-  });
-  assert.strictEqual(out.audioUrl, "/api/ytmusic/songs/baseVid/stream");
+  assert.strictEqual(out.duration, 150);
 });

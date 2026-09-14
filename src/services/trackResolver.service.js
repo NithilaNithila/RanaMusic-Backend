@@ -1,5 +1,5 @@
 const saavnService = require("./saavn.service");
-const ytService = require("./ytmusic.service");
+const ytmusicSearchService = require("./ytmusicSearch.service");
 
 // Spotify preview clips are short MP3s hosted on p.scdn.co; amazon tracks
 // arrive with no audio at all. Any of these can't play a full song, so we mark
@@ -8,7 +8,6 @@ const PREVIEW_PATTERNS = [/p\.scdn\.co/, /mp3-preview|preview/i, /msecnd\.net/i]
 
 const isPreviewAudioUrl = (url) => {
   if (typeof url !== "string" || !url.trim()) return true;
-  if (url.startsWith("/api/ytmusic/")) return false; // YT stream URL — already playable
   if (url.startsWith("/api/")) return true; // other backend proxy paths — try Saavn first
   return PREVIEW_PATTERNS.some((re) => re.test(url));
 };
@@ -100,91 +99,6 @@ const findFullTrack = async ({ name, artist = "" }) => {
   return bestScore >= 20 ? best : null;
 };
 
-// How many YouTube hits to consider for the backstop. `ytsearch1` is not
-// enough: a versioned request ("... Female Version") often ranks its base
-// version first, so the single top hit gets rejected and the track is left
-// unplayable even though the right version is one result down.
-const YT_BACKSTOP_LIMIT = 5;
-
-// YouTube Music backstop, used ONLY when Saavn finds no strong match. Keeps
-// the ~20% of tracks Saavn can't cover playable via an in-process yt-dlp
-// stream. Several hits are scored so the best title/artist match wins, and the
-// title must still line up (substring both ways, or every requested base token
-// present) so a bot's "best guess" can't feed the wrong track into the player.
-const findYtFullTrack = async ({ name, artist = "" }) => {
-  if (!ytService.isEnabled() || ytService.isBreakerOpen()) return null;
-  const cleanName = String(name || "")
-    .replace(/\([^)]*\)\s*/g, " ")
-    .replace(/\[[^\]]*\]\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const query = [cleanName, splitArtists(artist)[0]]
-    .filter(Boolean)
-    .join(" ")
-    .trim()
-    .slice(0, 120);
-  if (!query) return null;
-
-  let rows = [];
-  try {
-    const data = await ytService.search(query, { type: "track", limit: YT_BACKSTOP_LIMIT });
-    rows = (data && data.results && data.results.track) || [];
-  } catch (err) {
-    return null;
-  }
-
-  const wantFull = normalizeFull(name);
-  const wantBase = normalize(name);
-  const wantTokens = wantFull.split(" ").filter(Boolean);
-  const wantBaseTokens = wantBase.split(" ").filter(Boolean);
-  const wantArtists = splitArtists(artist).map((a) => a.toLowerCase()).filter(Boolean);
-
-  let best = null;
-  let bestScore = 0;
-  for (const row of rows) {
-    if (!row || !row.audio || !row.name) continue;
-    const gotFull = normalizeFull(row.name);
-    if (!gotFull) continue;
-    // The primary title token must appear in the candidate so an unrelated hit
-    // can never win.
-    if (wantTokens[0] && !gotFull.includes(wantTokens[0])) continue;
-
-    const gotTokens = new Set(gotFull.split(" ").filter(Boolean));
-    let score = gotFull === wantFull ? 100 : 0;
-    // Token overlap on the FULL title (parentheticals preserved) keeps sibling
-    // versions apart: a "female version" request must match "female version".
-    score += wantTokens.filter((t) => gotTokens.has(t)).length * 10;
-    const gotArtist = String(row.artist_name || "").toLowerCase();
-    if (wantArtists.some((a) => a && (gotArtist.includes(a) || a.includes(gotArtist)))) {
-      score += 20;
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = row;
-    }
-  }
-
-  if (!best || bestScore < 20) return null;
-
-  // Final safety net: the candidate's base title must line up with the
-  // requested base title so a version-word coincidence can't pick a wrong song.
-  const gotBase = normalize(best.name);
-  const baseOk =
-    !!gotBase &&
-    (gotBase.includes(wantBase) ||
-      wantBase.includes(gotBase) ||
-      (wantBaseTokens.length > 0 && wantBaseTokens.every((t) => gotBase.includes(t))));
-  if (!baseOk) return null;
-
-  return {
-    audioUrl: best.audio,
-    duration: Number(best.duration) || 0,
-    image: best.image || "",
-    name: best.name,
-  };
-};
-
 // Bounded promise: resolves with the value or `fallback` after `ms`
 // milliseconds so a slow upstream can't hold the whole resolve chain hostage.
 // The timer is cleared when the underlying promise settles first, so an early
@@ -211,18 +125,43 @@ const withTimeout = (promise, ms, fallback = null) =>
 // rather than paying an unbounded tail. Must land under the client's own
 // timeout (the app waits 15s for /api/tracks/resolve).
 const RESOLVE_DEADLINE_MS = 13000;
-// Inner budgets: Saavn gets most of the time budget; the YouTube backstop is
-// bounded so a throttled datacenter IP can't dominate the resolve chain. The
-// two are sequential, so worst case ≈ 7s + 7s ≈ 14s > 13s total cap — the
-// outer deadline is the final authority.
+// Inner budget: Saavn gets most of the time budget so a slow free-tier host
+// can't dominate the resolve chain.
 const SAVN_RESOLVE_DEADLINE_MS = 7000;
-const YT_RESOLVE_DEADLINE_MS = 7000;
+// Inner budget for the YouTube last-resort lookup. Cheap (single innertube
+// POST), but only runs after Saavn fails, so keep it small.
+const YT_FALLBACK_DEADLINE_MS = 5000;
+
+// Last-resort: when Saavn has no strong match, find the track on YouTube Music
+// via innertube (no yt-dlp/cookies/proxy) and hand back the videoId. The
+// browser embeds it client-side, so no backend stream is needed.
+const findYtFallback = async ({ name, artist = "" }) => {
+  const cleanName = String(name || "")
+    .replace(/\([^)]*\)\s*/g, " ")
+    .replace(/\[[^\]]*\]\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  // Keep the primary artist so sibling versions resolve to their own copy.
+  const query = [cleanName, splitArtists(artist)[0]]
+    .filter(Boolean)
+    .join(" ")
+    .trim()
+    .slice(0, 120);
+  if (!query) return null;
+  try {
+    const hit = await ytmusicSearchService.findTrack(query);
+    if (!hit || !hit.videoId) return null;
+    return { videoId: hit.videoId, image: hit.image || "" };
+  } catch {
+    return null;
+  }
+};
 
 // Replaces a stored preview / missing audio url with a full-length playable
-// copy. Saavn CDN is tried first (reliable, zero YouTube traffic); the
-// in-process YouTube stream backstop covers only the tracks Saavn can't match.
-// Best-effort: on failure the original values are preserved.
-const resolvePlayableAudioRaw = async ({ name, artist = "", audioUrl = "", duration = 0 }) => {
+// copy from the Saavn CDN. Best-effort: on failure the original values are
+// preserved. When Saavn can't match, falls back to a YouTube Music videoId so
+// the client can embed the track instead of erroring out.
+const resolvePlayableAudioRaw = async ({ name, artist = "", audioUrl = "", duration = 0, source = "", id = "" }) => {
   if (!isPreviewAudioUrl(audioUrl)) return { audioUrl, duration };
 
   let full = null;
@@ -236,17 +175,18 @@ const resolvePlayableAudioRaw = async ({ name, artist = "", audioUrl = "", durat
     return { audioUrl: full.audio, duration: full.duration || duration, image: full.image || "" };
   }
 
+  // No Saavn copy → hand back a YouTube Music videoId (dedupe: a ytmusic row
+  // already carries its videoId in `id`; skip a redundant lookup for it).
+  if (source === "ytmusic" && id) {
+    return { audioUrl, duration, videoId: String(id), image: "" };
+  }
   try {
-    const ytHit = await withTimeout(findYtFullTrack({ name, artist }), YT_RESOLVE_DEADLINE_MS);
-    if (ytHit && ytHit.audioUrl) {
-      return {
-        audioUrl: ytHit.audioUrl,
-        duration: ytHit.duration || duration,
-        image: ytHit.image || "",
-      };
+    const yt = await withTimeout(findYtFallback({ name, artist }), YT_FALLBACK_DEADLINE_MS);
+    if (yt && yt.videoId) {
+      return { audioUrl, duration, videoId: yt.videoId, image: yt.image || "" };
     }
   } catch (err) {
-    // Best-effort: preserve the original audio on any search/breaker failure.
+    // Best-effort: a failed YouTube lookup keeps the original audio values.
   }
 
   return { audioUrl, duration };
@@ -259,16 +199,12 @@ const resolvePlayableAudio = (opts) =>
   withTimeout(resolvePlayableAudioRaw(opts), RESOLVE_DEADLINE_MS, {
     audioUrl: opts.audioUrl,
     duration: opts.duration,
+    videoId: opts.videoId || "",
   });
 
-// Saavn-only resolution for cheap, subprocess-free lookups — used by the search
-// page where MANY rows are resolved at once. The full resolvePlayableAudio
-// spawns an in-process yt-dlp search for every unmatched row (7s budget each);
-// on a page of unresolvable tracks that is both slow and heavy enough to push a
-// small free instance over its memory budget. Detail/play endpoints that can
-// afford the YouTube backstop keep using resolvePlayableAudio. Best-effort:
-// missing/unchanged audio is preserved, so rows fall back to /tracks/resolve at
-// play time.
+// Cheaper, bounded lookups for calls where MANY rows are resolved at once —
+// used by the search page. Best-effort: missing/unchanged audio is preserved,
+// so rows fall back to /tracks/resolve at play time.
 const RESOLVE_SAVN_ONLY_DEADLINE_MS = 6000;
 const resolveSaavnOnly = (opts) =>
   withTimeout(
@@ -292,7 +228,7 @@ module.exports = {
   isPreviewAudioUrl,
   parseArtists,
   findFullTrack,
-  findYtFullTrack,
+  findYtFallback,
   withTimeout,
   resolvePlayableAudio,
   resolveSaavnOnly,

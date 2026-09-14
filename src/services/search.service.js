@@ -1,7 +1,7 @@
 const saavnService = require("./saavn.service");
 const spotifyService = require("./spotify.service");
 const amazonWebService = require("./amazonWeb.service");
-const ytmusicService = require("./ytmusic.service");
+const ytmusicService = require("./ytmusicSearch.service");
 const { memoize, makeCacheKey } = require("./cache.service");
 const { resolvePlayableAudio, resolveSaavnOnly, isPreviewAudioUrl } = require("./trackResolver.service");
 const mapLimit = require("../utils/mapLimit");
@@ -91,7 +91,7 @@ const PROVIDER_TIMEOUTS = {
   saavn: 9000,
   spotify: 10000, // wolfX search (up to 12s) + per-track audio resolution
   amazon: 9000, // config.json + skill POST + duration lookups
-  ytmusic: 8000, // in-process yt-dlp search spawn
+  ytmusic: 8000, // innertube search POST (fast when healthy)
 };
 
 // Bounds a provider fetch; on timeout it contributes nothing to the merge.
@@ -207,9 +207,9 @@ const fillMissingImages = async (type, items) => {
 // Spotify and Amazon rows carry no audio (or only a 16s Spotify preview), so
 // they wouldn't play. Replaces that audio with a full-length copy (Saavn).
 // Already playable rows are untouched, so Saavn results cost nothing.
-// opts.saavnOnly skips the YouTube backstop: the search page resolves MANY rows
-// at once, and spawning yt-dlp for every unmatched track is both slow and heavy
-// on a small instance. Detail/play endpoints keep the full backstop by default.
+// opts.saavnOnly skips the resolver entirely: the search page resolves MANY rows
+// at once, and a full resolve for every unmatched track is both slow and heavy
+// on a small instance. Detail/play endpoints keep the full resolve by default.
 const makePlayable = async (track, opts = {}) => {
   if (!track) return track;
   // Skip already-resolved tracks (Spotify/Amazon resolve audio in their own
@@ -296,17 +296,23 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
   }
 
   // Amazon rows come from the unofficial music.amazon.* scraper (real
-  // catalog, no LWA/cookies). YouTube Music rows come from the in-process
-  // yt-dlp search; non-track types cost nothing (the service returns empty
-  // without spawning a child). The resolver fills playable audio below.
+  // catalog, no LWA/cookies). The resolver fills playable audio below.
   fetchers.push(
-    keyed("ytmusic", ytmusicService.search(query, { type, limit, offset }).then((d) => d && d.results && d.results[type])),
     keyed("spotify", spotifyService.search(query, { type, limit, offset, resolveAudio: false }).then((d) => d && d.results && d.results[type])),
     keyed("amazon", amazonWebService.search(query, { type, limit, page, resolveAudio: false }).then((d) => d && d.results && d.results[type]))
   );
 
+  // YouTube Music track rows come from innertube (no yt-dlp/cookies/proxy)
+  // and carry a `videoId` the browser embeds client-side. Only tracks use it:
+  // albums/artists/playlists stay Saavn+Spotify+Amazon.
+  if (type === "track") {
+    fetchers.push(
+      keyed("ytmusic", ytmusicService.searchTracks(query, { limit, offset }).then((d) => d && d.results && d.results.track))
+    );
+  }
+
   // Wait for every provider (each bounded by its own budget) so the page
-  // represents all four APIs, then make the merged rows playable in one pass.
+  // represents all upstream APIs, then make the merged rows playable in one pass.
   // Providers are fetched raw (resolveAudio:false) so a slow provider can't
   // drop out of the page, and resolution is deferred to here instead: only
   // rows that lack full-length audio (raw Spotify previews, Amazon rows) go
@@ -324,21 +330,21 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
   // memoized) so a cold upstream can't bloat search latency — rows without
   // full audio fall back to /tracks/resolve at play time.
   //
-  // Spotify, Amazon and YouTube Music are OPTIONAL sources. When one is down,
+  // Spotify, Amazon and YouTube are OPTIONAL sources. When one is down,
   // throttled, or returns nothing, its group falls back to the reliable Saavn
   // catalog (which is already warm here — no extra upstream call): the page
   // never shows an empty source tab, and every row stays real (source label
-  // preserved) and playable via Saavn CDN / the YouTube backstop. Rows carry a
+  // preserved) and playable via Saavn CDN. Rows carry a
   // `fallbackOf` marker so the UI can flag "shown from Saavn".
   if (type === "track") {
-    const bySource = { saavn: [], spotify: [], ytmusic: [], amazon: [] };
+    const bySource = { saavn: [], spotify: [], amazon: [], ytmusic: [] };
     for (const p of providers) {
       if (p.rows) bySource[p.source] = tag(p.rows, p.source);
     }
 
     const saavnRows = bySource.saavn;
     if (saavnRows.length) {
-      for (const src of ["spotify", "ytmusic", "amazon"]) {
+      for (const src of ["spotify", "amazon", "ytmusic"]) {
         if (!bySource[src].length) {
           bySource[src] = saavnRows.map((row) => ({ ...row, fallbackOf: src }));
         }
@@ -351,12 +357,9 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
       limit
     );
 
-    // A page resolves MANY rows at once, and spawning yt-dlp for every track a
-    // provider can't cover is both slow and heavy on a small free instance (it
-    // was crashing under the load). Search rows are therefore resolved Saavn-only
-    // — full audio still lands on the merged page and the economical Saavn CDN,
-    // and the ~20% Saavn can't match defer to /tracks/resolve (which uses the
-    // YouTube backstop) when the user actually taps play.
+    // A page resolves MANY rows at once; full audio still lands on the merged
+    // page via the economical Saavn CDN, and the ~20% Saavn can't match defer
+    // to /tracks/resolve when the user actually taps play.
     //
     // The whole enrichment runs under ONE shared clock: the merged list gets
     // first claim, the source-list pass keeps whatever remains. On timeout we
@@ -387,7 +390,7 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
         if (!hit || !hit.audio) return row;
         return { ...row, audio: hit.audio, duration: hit.duration || row.duration };
       });
-    for (const src of ["spotify", "ytmusic", "amazon"]) {
+    for (const src of ["spotify", "amazon", "ytmusic"]) {
       bySource[src] = stampFromMerged(bySource[src]);
     }
 
@@ -411,12 +414,12 @@ const searchByType = async ({ query, type, limit, page, offset }) => {
 
     const audioResolved = await Promise.all([
       resolveListAudio(bySource.spotify, perListBudget),
-      resolveListAudio(bySource.ytmusic, perListBudget),
       resolveListAudio(bySource.amazon, perListBudget),
+      resolveListAudio(bySource.ytmusic, perListBudget),
     ]);
     bySource.spotify = audioResolved[0];
-    bySource.ytmusic = audioResolved[1];
-    bySource.amazon = audioResolved[2];
+    bySource.amazon = audioResolved[1];
+    bySource.ytmusic = audioResolved[2];
 
     // Per-provider artwork fills (memoized 24 h), two arrays at a time so a
     // slow image lookup can't cascade across providers.
