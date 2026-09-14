@@ -40,6 +40,22 @@ const spawnEnv = () => {
   return { ...process.env, PATH: [...dirs, process.env.PATH].filter(Boolean).join(sep) };
 };
 
+// What JS-runtime paths + PATH look like on THIS host, for the diagnostics.
+const jsRuntimeReport = () => {
+  const pathModule = require("node:path");
+  const fsModule = require("node:fs");
+  const projectDeno = pathModule.join(__dirname, "..", "..", ".deno", "bin");
+  return {
+    denoMunicipal: fsModule.existsSync(pathModule.join(projectDeno, "deno"))
+      ? pathModule.join(projectDeno, "deno")
+      : null,
+    denoOpt: fsModule.existsSync("/opt/deno/bin/deno") ? "/opt/deno/bin/deno" : null,
+    pathHasDeno: String(process.env.PATH || "").split(require("node:path").delimiter).some((d) =>
+      /deno/i.test(d)
+    ),
+  };
+};
+
 // Fingerprint the configured cookies file (content hash + shape) so a hosted
 // instance's cookies can be compared against a local cookies.txt without
 // exposing secrets. Used by the gated diagnostic only.
@@ -903,6 +919,7 @@ const debugFormats = (videoId) =>
         proxyUrl: maskProxy(ytConfig.proxyUrl),
         cookies: cookieFingerprint(),
         binaryPath: ytConfig.binaryPath || "packaged",
+        jsRuntime: jsRuntimeReport(),
       },
     }));
 
