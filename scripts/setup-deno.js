@@ -33,13 +33,38 @@ const tryResolve = () => {
   return hasOnPath("deno");
 };
 
-const httpGetBuffer = (url) =>
-  new Promise((resolve, reject) => {
+// GitHub's /releases/latest/download/... URLs answer with a 302 redirect to a
+// versioned asset URL. Node's https.get does NOT follow redirects, which made
+// every install fail with "HTTP 302". Global fetch (Node >= 18) follows
+// redirects automatically. Fall back to https.get only if fetch is missing.
+const httpGetBuffer = async (url) => {
+  if (typeof fetch === "function") {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120000);
+    try {
+      const res = await fetch(url, {
+        redirect: "follow",
+        signal: controller.signal,
+        headers: { "User-Agent": "setup-deno/1.0 (deno bootstrap)" },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return new Promise((resolve, reject) => {
     https
       .get(url, { timeout: 120000 }, (res) => {
-        if (res.statusCode !== 200) {
+        if (res.statusCode !== 200 && res.statusCode !== 302 && res.statusCode !== 307) {
           res.resume();
           return reject(new Error(`HTTP ${res.statusCode}`));
+        }
+        if (res.statusCode === 302 || res.statusCode === 307) {
+          res.resume();
+          const loc = res.headers.location;
+          if (!loc) return reject(new Error(`HTTP ${res.statusCode} without Location`));
+          return httpGetBuffer(loc).then(resolve).catch(reject);
         }
         const bufs = [];
         res.on("data", (d) => bufs.push(d));
@@ -48,6 +73,7 @@ const httpGetBuffer = (url) =>
       .on("timeout", () => reject(new Error("download timeout")))
       .on("error", reject);
   });
+};
 
 // Entry name inside Deno's release zip is just `deno` (linux) or `deno.exe`.
 const entryName = os.platform() === "win32" ? "deno.exe" : "deno";
