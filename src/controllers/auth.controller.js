@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/apiResponse");
 const User = require("../models/User");
@@ -17,6 +18,12 @@ const { sendPasswordResetEmail } = require("../services/email.service");
 const { recordFailure, clearFailures, getLockRemaining } = require("../utils/loginProtection");
 
 const RESET_EXPIRES_IN = "15m"; // reset tokens are deliberately short-lived
+
+// Precomputed bcrypt hash of a random string, used so the "user not found"
+// path performs a bcrypt compare identical in cost to a real password check.
+// This closes the timing oracle that would otherwise let an attacker infer
+// whether an email exists by measuring response latency.
+const DUMMY_PASSWORD_HASH = "$2a$10$J3X1BgA8BbxGHHNmpZ0eV.drfeVydnJmJ/tcZNjvb2/aD33ZnV/f.";
 
 // POST /api/auth/register
 const register = asyncHandler(async (req, res) => {
@@ -69,6 +76,9 @@ const login = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ email: normalizedEmail }).select("+password");
   if (!user) {
+    // Constant-time-ish: run an equal-cost bcrypt compare so a missing account
+    // responds in the same time as a wrong password on an existing account.
+    await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
     recordFailure(normalizedEmail, req.ip);
     return ApiResponse.error(res, "Invalid email or password", 401);
   }

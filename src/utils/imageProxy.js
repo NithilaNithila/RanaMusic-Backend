@@ -28,13 +28,25 @@ const isAllowedImageUrl = (url) => {
   }
 };
 
-// Rewrites allow-listed https image URLs to the backend proxy; everything else
-// is returned untouched so a blocked host still renders (direct load) rather
-// than breaking the artwork.
+// Public origin where this backend is reachable (e.g. https://api.example.com
+// for a Render/Railway deploy or https://localhost:5000 in dev). When set,
+// proxied artwork is emitted as an ABSOLUTE /api/images/... URL so album and
+// playlist covers render from any frontend origin — including a static host
+// (Netlify/Vercel/GitHub Pages) that has no same-origin /api reverse proxy.
+// The image proxy endpoint itself already sends Access-Control-Allow-Origin: *
+// so absolute cross-origin requests are safe. When unset, the relative path is
+// kept so classic same-origin mounting keeps working unchanged.
+const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
+
+// Rewrites allow-listed https image URLs to the backend proxy (absolute when a
+// public origin is configured, relative otherwise); everything else is returned
+// untouched so a blocked host still renders (direct load) rather than breaking
+// the artwork.
 const toProxyUrl = (url) => {
   if (!url) return "";
   if (!isAllowedImageUrl(url)) return url;
-  return `/api/images/image-proxy?url=${encodeURIComponent(url)}`;
+  const path = `/api/images/image-proxy?url=${encodeURIComponent(url)}`;
+  return PUBLIC_API_URL ? `${PUBLIC_API_URL}${path}` : path;
 };
 
-module.exports = { ALLOWED_IMAGE_HOSTS, isAllowedImageUrl, toProxyUrl };
+module.exports = { ALLOWED_IMAGE_HOSTS, isAllowedImageUrl, toProxyUrl, PUBLIC_API_URL };
