@@ -163,6 +163,8 @@ const toAlbumShape = (raw) => {
   };
 };
 
+const isValidAlbum = (album) => Boolean(album?.id && album?.name);
+
 const toArtistShape = (raw) => {
   const topSongs = raw.topSongs;
   const topAlbums = raw.topAlbums;
@@ -192,7 +194,9 @@ const searchTracks = async (query, opts = {}) => {
 const searchAlbums = async (query, opts = {}) => {
   const { page, limit } = sanitizePagination(opts);
   const data = await jiosaavnGet("search.getAlbumResults", { q: query, p: page + 1, n: limit });
-  const results = (data.results || []).map((a) => normalizeAlbum(toAlbumShape(a)));
+  const results = (data.results || [])
+    .map((a) => normalizeAlbum(toAlbumShape(a)))
+    .filter(isValidAlbum);
   return { total: data.total || results.length, results };
 };
 
@@ -254,7 +258,7 @@ const getArtistAlbums = async (id, opts = {}) => {
   });
   const topAlbums = data.topAlbums || {};
   const list = Array.isArray(topAlbums) ? topAlbums : topAlbums.albums || [];
-  const results = list.map((a) => normalizeAlbum(toAlbumShape(a)));
+  const results = list.map((a) => normalizeAlbum(toAlbumShape(a))).filter(isValidAlbum);
   return { total: topAlbums.total || results.length, results };
 };
 

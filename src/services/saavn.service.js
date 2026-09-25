@@ -126,7 +126,7 @@ const searchAlbums = withFallback(
   async (query, opts = {}) => {
     const { page, limit } = sanitizePagination(opts);
     const data = await saavnGet("/search/albums", { query, page, limit });
-    const results = (data.data?.results || []).map(normalizeAlbum);
+    const results = (data.data?.results || []).map(normalizeAlbum).filter(isValidEntity);
     // The Saavn proxy sometimes returns 200 with broken payloads (artists
     // serialized as PowerShell strings, images as whitespace).  Detect this
     // by checking whether most results lack images and treat it as a failure
@@ -261,7 +261,7 @@ const getArtistAlbums = withFallback(
   async (id, opts = {}) => {
     const { page, limit } = sanitizePagination(opts);
     const data = await saavnGet(`/artists/${id}/albums`, { page, limit });
-    const results = (data.data?.albums || []).map(normalizeAlbum);
+    const results = (data.data?.albums || []).map(normalizeAlbum).filter(isValidEntity);
     return { total: data.data?.total || 0, results };
   },
   jiosaavn.getArtistAlbums

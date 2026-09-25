@@ -69,6 +69,25 @@ test("searchAlbums maps results", async () => {
   assert.strictEqual(out.results[0].id, "al");
 });
 
+test("searchAlbums drops entries without ids", async () => {
+  axiosMock.setHandler(() =>
+    Promise.resolve({
+      data: {
+        data: {
+          results: [
+            { id: "al", name: "A", image: [{ quality: "500x500", url: "http://img" }] },
+            null,
+            { name: "Missing ID", image: [{ quality: "500x500", url: "http://img" }] },
+          ],
+          total: 3,
+        },
+      },
+    })
+  );
+  const out = await saavn.searchAlbums("q", {});
+  assert.deepStrictEqual(out.results.map((album) => album.id), ["al"]);
+});
+
 test("searchArtists maps results", async () => {
   axiosMock.setHandler(() => Promise.resolve({ data: { data: { results: [{ id: "ar", name: "A" }], total: 1 } } }));
   const out = await saavn.searchArtists("q", {});
@@ -205,10 +224,22 @@ test("getArtistSongs maps artist songs", async () => {
   assert.strictEqual(out.results[0].id, "t1");
 });
 
-test("getArtistAlbums maps artist albums", async () => {
-  axiosMock.setHandler(() => Promise.resolve({ data: { data: { albums: [{ id: "al", name: "A", artists: { primary: [] } }], total: 1 } } }));
+test("getArtistAlbums maps valid artist albums", async () => {
+  axiosMock.setHandler(() =>
+    Promise.resolve({
+      data: {
+        data: {
+          albums: [
+            { id: "al", name: "A", artists: { primary: [] } },
+            { name: "Missing ID", artists: { primary: [] } },
+          ],
+          total: 2,
+        },
+      },
+    })
+  );
   const out = await saavn.getArtistAlbums("ar");
-  assert.strictEqual(out.results[0].id, "al");
+  assert.deepStrictEqual(out.results.map((album) => album.id), ["al"]);
 });
 
 test("getLyrics returns lyrics", async () => {

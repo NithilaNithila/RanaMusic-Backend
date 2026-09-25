@@ -51,6 +51,7 @@ const normalizeAlbum = (album = {}) => {
     id: album.id,
     name: album.name || album.title || "",
     type: "album",
+    source: "spotify",
     artist_name: album.artist || primary.map((a) => a.name).join(", ") || "",
     image: album.thumbnail || album.image || "",
     year: (album.release_date || "").toString().slice(0, 4),

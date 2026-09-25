@@ -1,7 +1,25 @@
+const normalizeImageUrl = (value) => {
+  const url = typeof value === "string" ? value.trim() : "";
+  if (!/^https?:\/\//i.test(url)) return "";
+  return url.replace(
+    /^(https?:\/\/c\.saavncdn\.com)\/editorial\/logo\//i,
+    "$1/editorial/"
+  );
+};
+
 const getImage = (images, quality = "500x500") => {
-  if (!Array.isArray(images)) return "";
-  const match = images.find((img) => img.quality === quality);
-  return match ? match.url : images[images.length - 1]?.url || "";
+  const candidates = Array.isArray(images) ? images : [images];
+  const imageUrl = (image) =>
+    normalizeImageUrl(typeof image === "object" && image !== null ? image.url : image);
+  const preferred = candidates.find((image) => image?.quality === quality);
+  const preferredUrl = imageUrl(preferred);
+  if (preferredUrl) return preferredUrl;
+
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const url = imageUrl(candidates[index]);
+    if (url) return url;
+  }
+  return "";
 };
 
 const getDownloadUrl = (urls, quality = "320kbps") => {
@@ -52,30 +70,43 @@ const normalizeTrack = (song) => ({
     : { primary: [], featured: [] },
 });
 
-const normalizePlaylist = (playlist) => ({
-  id: playlist.id,
-  name: playlist.name,
-  type: "playlist",
-  image: getImage(playlist.image),
-  language: playlist.language || "",
-  url: playlist.url || "",
-  track_count: playlist.songCount || playlist.totalSongs || 0,
-  songs: Array.isArray(playlist.songs) ? playlist.songs.map(normalizeTrack) : [],
-});
+const normalizePlaylist = (playlist) => {
+  const songs = Array.isArray(playlist.songs)
+    ? playlist.songs.filter((song) => song && typeof song === "object")
+    : [];
+  const image =
+    getImage(playlist.image) ||
+    songs.map((song) => getImage(song.image)).find(Boolean) ||
+    "";
 
-const normalizeAlbum = (album) => ({
-  id: album.id,
-  name: album.name,
-  type: "album",
-  artist_name: getPrimaryArtist(album.artists),
-  image: getImage(album.image),
-  year: album.year || "",
-  song_count: album.songCount || 0,
-  language: album.language || "",
-  url: album.url || "",
-  play_count: album.playCount || 0,
-  songs: Array.isArray(album.songs) ? album.songs.map(normalizeTrack) : [],
-});
+  return {
+    id: playlist.id,
+    name: playlist.name,
+    type: "playlist",
+    image,
+    language: playlist.language || "",
+    url: playlist.url || "",
+    track_count: playlist.songCount || playlist.totalSongs || 0,
+    songs: songs.map(normalizeTrack),
+  };
+};
+
+const normalizeAlbum = (album) => {
+  if (!album || !album.id || !album.name) return null;
+  return {
+    id: album.id,
+    name: album.name,
+    type: "album",
+    artist_name: getPrimaryArtist(album.artists),
+    image: getImage(album.image),
+    year: album.year || "",
+    song_count: album.songCount || 0,
+    language: album.language || "",
+    url: album.url || "",
+    play_count: album.playCount || 0,
+    songs: Array.isArray(album.songs) ? album.songs.map(normalizeTrack) : [],
+  };
+};
 
 const getCollectionCount = (items) => {
   if (Array.isArray(items)) return items.length;

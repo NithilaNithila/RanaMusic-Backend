@@ -31,12 +31,20 @@ test("searchTracks maps results", async () => {
   assert.strictEqual(out.results[0].has_lyrics, true);
 });
 
-test("searchAlbums maps results", async () => {
+test("searchAlbums maps valid results", async () => {
   axiosMock.setHandler(() =>
-    Promise.resolve({ data: { total: 1, results: [{ albumid: "al", title: "A", primary_artists: "X" }] } })
+    Promise.resolve({
+      data: {
+        total: 2,
+        results: [
+          { albumid: "al", title: "A", primary_artists: "X" },
+          { title: "Missing ID", primary_artists: "X" },
+        ],
+      },
+    })
   );
   const out = await jiosaavn.searchAlbums("q", {});
-  assert.strictEqual(out.results[0].id, "al");
+  assert.deepStrictEqual(out.results.map((album) => album.id), ["al"]);
 });
 
 test("searchArtists maps results", async () => {
@@ -77,12 +85,22 @@ test("getArtistSongs returns slice with total", async () => {
   assert.strictEqual(out.total, 2);
 });
 
-test("getArtistAlbums returns slice", async () => {
+test("getArtistAlbums returns valid albums", async () => {
   axiosMock.setHandler(() =>
-    Promise.resolve({ data: { topAlbums: { total: 1, albums: [{ id: "al", title: "A", primary_artists: "X" }] } } })
+    Promise.resolve({
+      data: {
+        topAlbums: {
+          total: 2,
+          albums: [
+            { id: "al", title: "A", primary_artists: "X" },
+            { title: "Missing ID", primary_artists: "X" },
+          ],
+        },
+      },
+    })
   );
   const out = await jiosaavn.getArtistAlbums("ar");
-  assert.strictEqual(out.results[0].id, "al");
+  assert.deepStrictEqual(out.results.map((album) => album.id), ["al"]);
 });
 
 test("getLyrics returns lyrics", async () => {

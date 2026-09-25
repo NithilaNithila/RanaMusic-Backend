@@ -58,6 +58,7 @@ test("normalizeAlbum maps album plus its tracks", () => {
     tracks: [{ id: "t1", name: "X" }],
   });
   assert.strictEqual(out.id, "al1");
+  assert.strictEqual(out.source, "spotify");
   assert.strictEqual(out.song_count, 1);
   assert.strictEqual(out.songs[0].album_id, "al1");
   assert.strictEqual(out.songs[0].album_name, "Album");
