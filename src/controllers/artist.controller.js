@@ -2,8 +2,24 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/apiResponse");
 const { logger } = require("../services/logger.service");
 const saavnService = require("../services/saavn.service");
+const spotifyService = require("../services/spotify.service");
 const { sanitizeLang } = require("../config/languages");
 const { getArtistPool } = require("../utils/artistPool");
+
+const ARTIST_SOURCES = ["saavn", "spotify"];
+const DEFAULT_ARTIST_SOURCE = "saavn";
+
+const getArtistSource = (value) => {
+  const source = String(value || DEFAULT_ARTIST_SOURCE).trim().toLowerCase();
+  return ARTIST_SOURCES.includes(source) ? source : null;
+};
+
+const getUnknownSourceError = (res, source) =>
+  ApiResponse.error(
+    res,
+    `Unknown artist source '${source}'. Supported: ${ARTIST_SOURCES.join(", ")}`,
+    400
+  );
 
 const getArtists = asyncHandler(async (req, res) => {
   const lang = sanitizeLang(req.query.lang);
@@ -28,7 +44,11 @@ const searchArtists = asyncHandler(async (req, res) => {
 });
 
 const getArtistById = asyncHandler(async (req, res) => {
-  const artist = await saavnService.getArtistById(req.params.id);
+  const source = getArtistSource(req.query.source);
+  if (!source) return getUnknownSourceError(res, String(req.query.source).trim().toLowerCase());
+
+  const service = source === "spotify" ? spotifyService : saavnService;
+  const artist = await service.getArtistById(req.params.id);
   if (!artist) return ApiResponse.error(res, "Artist not found", 404);
   return ApiResponse.success(res, artist);
 });
@@ -39,6 +59,9 @@ const ARTIST_ALBUM_MAX_PAGES = 40;
 const ARTIST_ALBUM_TIMEOUT_MS = 15000;
 
 const getArtistAlbums = asyncHandler(async (req, res) => {
+  const source = getArtistSource(req.query.source);
+  if (!source) return getUnknownSourceError(res, String(req.query.source).trim().toLowerCase());
+
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 500);
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
   const rawOffset =
@@ -46,6 +69,16 @@ const getArtistAlbums = asyncHandler(async (req, res) => {
       ? Math.max(parseInt(req.query.offset, 10) || 0, 0)
       : (page - 1) * limit;
   const start = Math.min(rawOffset, 500 - limit);
+
+  if (source === "spotify") {
+    const data = await spotifyService.getArtistAlbums(req.params.id, {
+      type: req.query.type,
+      limit,
+      offset: start,
+    });
+    return ApiResponse.success(res, data.results || []);
+  }
+
   const wanted = Math.min(start + limit, 500);
   const seen = new Set();
   const results = [];
@@ -87,6 +120,16 @@ const getArtistAlbums = asyncHandler(async (req, res) => {
 });
 
 const getArtistTracks = asyncHandler(async (req, res) => {
+  const source = getArtistSource(req.query.source);
+  if (!source) return getUnknownSourceError(res, String(req.query.source).trim().toLowerCase());
+
+  if (source === "spotify") {
+    const data = await spotifyService.getArtistTopTracks(req.params.id, {
+      market: req.query.market,
+    });
+    return ApiResponse.success(res, data.results || []);
+  }
+
   const data = await saavnService.getArtistSongs(req.params.id);
   return ApiResponse.success(res, data.results || []);
 });
